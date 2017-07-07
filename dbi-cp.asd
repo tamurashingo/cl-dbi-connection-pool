@@ -19,12 +19,15 @@
   :author "tamura shingo"
   :license "LLGPL"
   :depends-on (:cl-syntax
-	       :cl-syntax-annot
-	       :cl-dbi)
+               :cl-syntax-annot
+               :cl-dbi
+               :bordeaux-threads
+               :bt-semaphore)
   :components ((:module "src"
                 :components
                 ((:file "dbi-cp" :depends-on ("connectionpool"))
-                 (:file "connectionpool"))))
+                 (:file "connectionpool" :depends-on ("semaphore"))
+                 (:file "semaphore"))))
   :description "connection pool for CL-DBI"
   :long-description
   #.(with-open-file (stream (merge-pathnames

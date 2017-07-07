@@ -1,7 +1,14 @@
 (in-package :cl-user)
 (defpackage dbi-cp.connectionpool
-  (:use :cl
-	:cl-annot))
+  (:use :cl)
+  (:import-from :dbi-cp.semaphore
+                :make-dbi-semaphore
+                :borrow
+                :back
+                :reset-counter
+                :synchronized
+                :<synchronized>
+                :synchronized))
 (in-package :dbi-cp.connectionpool)
 
 (cl-syntax:use-syntax :annot)
@@ -24,10 +31,10 @@ Example
   (setf *CONNECTION-HASH* (make-hash-table :test #'eq))
   (loop for index from 0 below initial-size
         ; do (format T "setting ~A~%" index)
-        do (let ((conn (apply #'dbi:connect driver-name params)))
-             (setf (aref *CONNECTIONS* index)
-                   (list :conn conn
-                         :use NIL)))))
+        do (let* ((conn (apply #'dbi:connect driver-name params))
+                  (sem (make-dbi-semaphore :connection conn)))
+             (setf (aref *CONNECTIONS* index) sem))))
+
 @export
 (defun disconnect-all ()
   "disconnect all connections"
