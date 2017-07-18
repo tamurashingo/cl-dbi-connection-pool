@@ -1,24 +1,16 @@
 (in-package :cl-user)
 (defpackage dbi-cp.connectionpool
   (:use :cl)
-  (:import-from :dbi-cp.semaphore
-                :make-dbi-semaphore
-                :borrow
-                :back
-                :reset-counter
-                :synchronized
-                :<synchronized>
-                :synchronized))
+  (:import-from :dbi-cp.proxy
+                :<dbi-connection-proxy>
+                :dbi-connection
+                :disconnect-fn
+                :disconnect
+                :prepare
+                :do-sql))
 (in-package :dbi-cp.connectionpool)
 
 (cl-syntax:use-syntax :annot)
-
-
-(defvar *CONNECTIONS* NIL
-  "array for connection and in use flag")
-
-(defvar *CONNECTION-HASH* NIL
-  "dbi-connection to connection array index")
 
 
 @export
@@ -30,7 +22,7 @@
                :initarg :connect-fn
                :documentation "function what connecto to database ")))
 
-(defclass <pooled-connnection> ()
+(defclass <pooled-connection> ()
   ((connect-p :type boolean
               :accessor connect-p
               :initform NIL)
@@ -42,66 +34,67 @@
                          :initform NIL)))
 
 @export
-(defun make-connection-pool (driver-name &rest params &key database-name username passwod (initial-size 10) (max-size 10))
+(defun make-dbi-connection-pool (driver-name &rest params &key database-name username password (initial-size 10) (max-size 10))
   "make connection pool
 
 Example
   (make-connection-pool :mysql :database-name \"cldbi\" :username \"root\" :password \"password\")"
-  (let ((pool (make-array max-size :initial-element NIL))
-        (dbi-connection-pool
-         (make-instance '<dbi-connection-pool>
-                        :pool pool
-                        :connect-fn (lambda ()
-                                      (apply #'dbi:connect driver-name params)))))
-    ;; create <pooled-connection> ]instance
+  (let* ((pool (make-array max-size :initial-element NIL))
+         (dbi-connection-pool
+          (make-instance '<dbi-connection-pool>
+                         :pool pool
+                         :connect-fn (lambda ()
+                                       (apply #'dbi:connect driver-name params)))))
+    ;; create <pooled-connection> instance
     (loop for idx from 0 below max-size
           do (setf (aref pool idx)
-                   (make-instance '<pooled-connection>)))
+                   (make-instance '<pooled-connection>
+                                  :dbi-connection-proxy (make-instance '<dbi-connection-proxy>))))
     ;; connect initial-size connection
-    (let ((connect-fn (connect-fn dbi-connection-pool)))
+    (let ((connect-fn (slot-value dbi-connection-pool 'connect-fn)))
       (loop for idx from 0 below initial-size
-            do (let ((pooled-conn (aref pool idx)))
+            do (let* ((pooled-conn (aref pool idx))
+                      (semaphore (semaphore pooled-conn))
+                      (dbi-connection-proxy (dbi-connection-proxy pooled-conn)))
                  (setf (connect-p pooled-conn) T)
-                 (setf (dbi-connection-proxy pooled-conn) (funcall connect-fn)))))
-
+                 (setf (dbi-connection dbi-connection-proxy) (funcall connect-fn))
+                 (setf (disconnect-fn dbi-connection-proxy)
+                       (lambda ()
+                         (bt-sem:signal-semaphore semaphore))))))
     dbi-connection-pool))
 
 
 @export
-(defun disconnect-all ()
+(defmethod shutdown ((conn <dbi-connection-pool>))
   "disconnect all connections"
-  (when *CONNECTIONS*
-    (loop for conn across *CONNECTIONS*
-          for index = 0 then (1+ index)
-          if (not (null (getf conn :conn)))
-	     do ; (format T "disconnect ~A~%" index)
-                (remhash (getf conn :conn) *CONNECTION-HASH*)
-                (dbi:disconnect (getf conn :conn))
-                (setf (getf conn :conn) NIL)
-	        (setf (getf conn :use) NIL))))
-
+  (loop for pool across (slot-value conn 'pool)
+        when (connect-p pool)
+             do (let* ((dbi-connection-proxy (dbi-connection-proxy pool))
+                       (dbi-connection (dbi-connection dbi-connection-proxy)))
+                  (disconnect dbi-connection))))
 
 @export
-(defun get-connection ()
-  "get connection from connection pool"
-  (loop for conn across *CONNECTIONS*
-        for index = 0 then (1+ index)
-        ; do (format T "checking ~A ...~%" index)
-        if (not (eq (getf conn :use) :USE))
-           do ; (format T "use: ~A~%" index)
-              (setf (getf conn :use) :USE)
-              (setf (gethash (getf conn :conn) *CONNECTION-HASH*) index)
-              (return (getf conn :conn))))
-
-@export
-(defun disconnect (dbi-conn)
-  "returns connection to connection pool"
-  (multiple-value-bind (index flag)
-      (gethash dbi-conn *CONNECTION-HASH*)
-    (when flag
-      (let ((conn (aref *CONNECTIONS* index)))
-        (setf (getf conn :use) NIL)
-        (remhash dbi-conn *CONNECTION-HASH*)))))
-
-
+(defmethod get-connection ((conn <dbi-connection-pool>))
+  "get <dbi-connection-proxy> from connection pool"
+  (loop for pool across (slot-value conn 'pool)
+        if (connect-p pool)
+             do (let ((semaphore (semaphore pool)))
+                  (when (bt-sem:try-semaphore semaphore)
+                    (let ((dbi-connection-proxy (dbi-connection-proxy pool)))
+                      (setf (disconnect-fn dbi-connection-proxy)
+                            (lambda ()
+                              (bt-sem:signal-semaphore semaphore)))
+                      (return dbi-connection-proxy))))
+        else
+          do (let ((semaphore (semaphore pool)))
+               (when (bt-sem:try-semaphore semaphore)
+                 (let ((connect-fn (slot-value conn 'connect-fn))
+                       (dbi-connection-proxy (dbi-connection-proxy conn)))
+                   (setf (dbi-connection dbi-connection-proxy) (funcall connect-fn))
+                   (setf (disconnect-fn dbi-connection-proxy)
+                         (lambda ()
+                           (bt-sem:signal-semaphore semaphore)))
+                   (return dbi-connection-proxy))))
+        end
+        finally (return nil)))
 

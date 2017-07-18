@@ -3,14 +3,17 @@
   (:use :cl)
   (:nicknames :cl-dbi-connection-pool)
   (:import-from :dbi-cp.connectionpool
-                :make-connection-pool
-                :disconnect-all
-                :get-connection
-                :disconnect)
-  (:export :make-connection-pool
-           :disconnect-all
+                :make-dbi-connection-pool
+                :shutdown
+                :get-connection)
+  (:import-from :dbi-cp.proxy
+                :disconnect
+                :prepare
+                :do-sql)
+  (:export :make-dbi-connection-pool
            :get-connection
-           :disconnect))
+           :do-sql
+           :prepare
+           :disconnect
+           :shutdown))
 (in-package :dbi-cp)
-
-

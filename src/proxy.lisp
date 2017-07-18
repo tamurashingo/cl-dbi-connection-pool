@@ -2,6 +2,7 @@
 (defpackage dbi-cp.proxy
   (:use :cl
         :cl-annot
+        :annot.class
         :cl-dbi))
 (in-package :dbi-cp.proxy)
 
@@ -24,7 +25,7 @@
                   :accessor disconnect-fn)))
 
 @proxy
-(defmethod disconnect ((conn <dbi-cnnection-proxy>))
+(defmethod disconnect ((conn <dbi-connection-proxy>))
   (let ((dbi-connection (dbi-connection conn))
         (disconnect-fn (disconnect-fn conn)))
     (rollback dbi-connection)
