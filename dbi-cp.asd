@@ -26,8 +26,9 @@
   :components ((:module "src"
                 :components
                 ((:file "dbi-cp" :depends-on ("connectionpool"))
-                 (:file "connectionpool" :depends-on ("proxy"))
-                 (:file "proxy"))))
+                 (:file "connectionpool" :depends-on ("proxy" "error"))
+                 (:file "proxy")
+                 (:file "error"))))
   :description "connection pool for CL-DBI"
   :long-description
   #.(with-open-file (stream (merge-pathnames
