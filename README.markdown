@@ -1,17 +1,40 @@
 # CL-DBI-Connection-Pool - connection pool for CL-DBI
 
+[![Build Status](https://travis-ci.org/tamurashingo/cl-dbi-connection-pool.svg?branch=master)](https://travis-ci.org/tamurashingo/cl-dbi-connection-pool)
+
+This library provides connection pool for CL-DBI.
+
+
 ## Usage
 
 ### Create connection pool
 
 ```common-lisp
-(make-connection-pool :mysql :database-name "cldbi" :username "root" :password "password")
+(make-dbi-connection-pool :mysql :database-name "dbi-cp" :username "root" :password "password")
 ```
 
 ### Get connection
 
 ```common-lisp
 (setf conn (get-connection))
+```
+
+### Prepare, Execute, Fetch
+
+Those functions are based on CL-DBI.
+
+```common-lisp
+(let* ((query (prepare conn "SELECT * FROM person WHERE id = ?"))
+       (result (execute query 1)))
+  (fetch result))
+```
+
+### Commit, Rollback
+
+```common-lisp
+(commit conn)
+
+(rollback conn)
 ```
 
 ### Return connection
@@ -21,6 +44,8 @@
 ```
 
 ## Installation
+
+This library will be available on Quicklisp when ready for use.
 
 ## Author
 

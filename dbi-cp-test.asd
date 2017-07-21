@@ -15,7 +15,8 @@
                :prove)
   :components ((:module "t"
                 :components
-                ((:test-file "dbi-cp"))))
+                ((:test-file "dbi-cp")
+                 (:test-file "proxy"))))
   :description "Test system for CL-DBI-CONNECTION-POOL"
 
   :defsystem-depends-on (:prove-asdf)

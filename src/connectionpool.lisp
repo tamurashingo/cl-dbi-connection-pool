@@ -41,7 +41,7 @@
   "make connection pool
 
 Example
-  (make-dbi-connection-pool :mysql :database-name \"cldbi\" :username \"root\" :password \"password\")"
+  (make-dbi-connection-pool :mysql :database-name \"dbicp\" :username \"root\" :password \"password\")"
   ;; remove addtional parameter for original dbi:connect argument
   (remf params :initial-size)
   (remf params :max-size)

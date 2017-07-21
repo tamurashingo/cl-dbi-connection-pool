@@ -9,21 +9,22 @@
   (:import-from :dbi-cp.proxy
                 :disconnect
                 :prepare
-                :do-sql)
+                :do-sql
+                :row-count
+                :begin-transaction
+                :commit
+                :rollback)
   (:import-from :dbi-cp.error
                 :<dbi-cp-no-connection>)
   (:import-from :dbi
                 :execute
                 :fetch
                 :fetch-all
-                :begin-transaction
-                :commit
-                :rollback
                 :savepoint
                 :rollback-savepoint
                 :release-savepoint
                 :ping
-                :row-count
+                :with-transaction
 
                 :<dbi-error>
                 :<dbi-warning>
@@ -50,6 +51,7 @@
            :release-savepoint
            :ping
            :row-count
+           :with-transaction
            :disconnect
            :shutdown
 

@@ -21,7 +21,6 @@
   :depends-on (:cl-syntax
                :cl-syntax-annot
                :cl-dbi
-               :bordeaux-threads
                :bt-semaphore)
   :components ((:module "src"
                 :components
