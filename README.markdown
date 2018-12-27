@@ -311,7 +311,11 @@ NIL
 
 ## Installation
 
-This library will be available on Quicklisp when ready for use.
+This library is available on Quicklisp.
+
+```commonlisp
+(ql:quickload :cl-dbi-connection-pool)
+```
 
 ## Author
 

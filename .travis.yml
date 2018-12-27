@@ -14,11 +14,6 @@ env:
   matrix:
     - LISP=sbcl-bin
     - LISP=ccl-bin
-    - LISP=clisp
-
-matrix:
-  allow_failures:
-    - env: LISP=clisp
 
 install:
   # Install Roswell
