@@ -39,9 +39,9 @@
     (apply #'prepare dbi-connection sql rest)))
 
 @proxy
-(defmethod do-sql ((conn <dbi-connection-proxy>) (sql string) &rest params)
+(defmethod do-sql ((conn <dbi-connection-proxy>) (sql string) &optional params)
   (let ((dbi-connection (dbi-connection conn)))
-    (apply #'do-sql dbi-connection sql params)))
+    (do-sql dbi-connection sql params)))
 
 
 @proxy

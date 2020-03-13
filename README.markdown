@@ -71,7 +71,7 @@ this function is based on `CL-DBI`
 execute SQL.
 
 ```common-lisp
-(dbi-cp:execute query &rest params) ;; => dbi.driver:<dbi-query>
+(dbi-cp:execute query &optional params) ;; => dbi.driver:<dbi-query>
 ```
 
 - query (dbi.driver:&lt;dbi-query&gt;)
@@ -126,7 +126,7 @@ do preparation and execution at once for INSERT, UPDATE, DELETE or DDL.
 
 
 ```common-lisp
-(dbi-cp:do-sql connection sql &rest params)
+(dbi-cp:do-sql connection sql &optional params)
 ```
 
 - connection (dbi-cp.proxy:&lt;dbi-connection-proxy&gt;)
@@ -283,9 +283,9 @@ CL-USER> (dbi-cp:begin-transaction connection)
 ; No value
 
 CL-USER> (let* ((query (dbi-cp:prepare connection "insert into person (id, name) values (?, ?)")))
-           (dbi-cp:execute query 1 "user1")
-           (dbi-cp:execute query 2 "user2")
-           (dbi-cp:execute query 3 "user3"))
+           (dbi-cp:execute query (list 1 "user1"))
+           (dbi-cp:execute query (list 2 "user2"))
+           (dbi-cp:execute query (list 3 "user3")))
 #<DBD.MYSQL:<DBD-MYSQL-QUERY> {1004B671F3}>
 
 ;;;
