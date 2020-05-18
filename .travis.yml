@@ -2,10 +2,15 @@ language: common-lisp
 sudo: false
 
 addons:
-  postgresql: "9.4"
+  apt:
+    packages:
+      - mysql-client
+      - libmysqlclient20
+      - libmysqlclient-dev
 
 services:
   - postgresql
+  - mysql
 
 env:
   global:
@@ -19,6 +24,8 @@ install:
   # Install Roswell
   - curl -L https://raw.githubusercontent.com/roswell/roswell/release/scripts/install-for-ci.sh | sh
   - ros install prove
+  - ros install dbi-cp
+  - sudo ln -s /usr/lib/x86_64-linux-gnu/libmysqlclient.so /usr/lib/x86_64-linux-gnu/libmysqlclient_r.so
 
 before_script:
   - mysql -uroot -e 'GRANT ALL ON *.* TO nobody@"localhost" IDENTIFIED BY "nobody"'

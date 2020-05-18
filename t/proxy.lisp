@@ -13,13 +13,13 @@
 ;; ----------------------------------------
 
 (defun test-do-sql (conn)
-  (is (do-sql conn "DROP TABLE IF EXISTS person") nil)
+  (is (do-sql conn "DROP TABLE IF EXISTS person") 0)
   (is (do-sql conn "CREATE TABLE person (id INTEGER PRIMARY KEY, name VARCHAR(24) NOT NULL)")
-      nil)
+      0)
   (is (do-sql conn "INSERT INTO person (id, name) values (1, 'fukamachi')")
-      nil)
+      1)
   (is (do-sql conn "INSERT INTO person (id, name) values (2, 'matsuyama')")
-      nil))
+      1))
 
 (defun test-prepare-execute-fetch (conn)
   (let (query result)
@@ -34,16 +34,17 @@
       (is (getf result :|name|) "matsuyama"))
     (is (fetch result) nil))
 
-  (let* ((query (prepare conn "SELECT * FROM person WHERE name = ?"))
-         (result (execute query nil)))
-    (is (fetch result) nil))
+;; in MySQL and PostgreSQL, query parameter NIL occurrs an error
+;;  (let* ((query (prepare conn "SELECT * FROM person WHERE name = ?"))
+;;         (result (execute query nil)))
+;;    (is (fetch result) nil))
 
   (execute (prepare conn "INSERT INTO person (id, name) VALUES (3, 'snmsts')"))
 
   (is (row-count conn) 1)
 
   (let* ((query (prepare conn "SELECT * FROM person WHERE name = ?"))
-         (result (execute query "snmsts")))
+         (result (execute query '("snmsts"))))
     (is (getf (fetch result) :|name|) "snmsts")))
 
 (defun test-with-transaction (conn)
@@ -60,11 +61,12 @@
   (is-type (handler-case (do-sql conn "INSERT")
              (error (e) e))
            '<dbi-database-error>)
+  (rollback conn) ;; for PostgreSQL
   (is-type (handler-case (execute (prepare conn "SELECT SELECT SELECT"))
              (error (e) e))
            '<dbi-database-error>)
-  (do-sql conn "INSERT INTO person (id, name) VALUES (5, 'mizuna')"))
-
+  (rollback conn) ;; for PostgreSQL
+)
 
 
 (plan nil)
