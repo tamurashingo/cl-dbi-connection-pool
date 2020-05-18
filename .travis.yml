@@ -26,6 +26,7 @@ install:
   - ros install prove
   - ros run -e "(ql:quickload '(:cl-dbi :cl-syntax :cl-syntax-annot :bt-semaphore)) (quit)"
   - ldconfig -p | grep mysqlclient
+  - sudo ln -s /usr/lib/x86_64-linux-gnu/libmysqlclient.so /usr/lib/x86_64-linux-gnu/libmysqlclient_r.so
 
 before_script:
   - mysql -uroot -e 'GRANT ALL ON *.* TO nobody@"localhost" IDENTIFIED BY "nobody"'
