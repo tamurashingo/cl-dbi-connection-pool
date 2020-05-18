@@ -107,7 +107,7 @@
       (disconnect conn))))
 
 (test-all *connection-pool-sqlite3*)
-(test-all *connection-pool-mysql*)
+;;(test-all *connection-pool-mysql*)
 (test-all *connection-pool-postgres*)
 
 (shutdown *connection-pool-sqlite3*)
