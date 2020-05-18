@@ -61,6 +61,7 @@
   (is-type (handler-case (do-sql conn "INSERT")
              (error (e) e))
            '<dbi-database-error>)
+  (rollback conn) ;; for PostgreSQL
   (is-type (handler-case (execute (prepare conn "SELECT SELECT SELECT"))
              (error (e) e))
            '<dbi-database-error>)
