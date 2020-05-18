@@ -25,6 +25,7 @@ install:
   - curl -L https://raw.githubusercontent.com/roswell/roswell/release/scripts/install-for-ci.sh | sh
   - ros install prove
   - ros run -e "(ql:quickload '(:cl-dbi :cl-syntax :cl-syntax-annot :bt-semaphore)) (quit)"
+  - ldconfig -p | grep mysqlclient
 
 before_script:
   - mysql -uroot -e 'GRANT ALL ON *.* TO nobody@"localhost" IDENTIFIED BY "nobody"'
