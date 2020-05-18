@@ -66,8 +66,7 @@
              (error (e) e))
            '<dbi-database-error>)
   (rollback conn) ;; for PostgreSQL
-  (do-sql conn "INSERT INTO person (id, name) VALUES (5, 'mizuna')"))
-
+)
 
 
 (plan nil)
