@@ -2,7 +2,10 @@ language: common-lisp
 sudo: false
 
 addons:
-  postgresql: "9.4"
+  apt:
+    packages:
+      - mysql-client
+      - libmysqlclient-dev
 
 services:
   - postgresql
