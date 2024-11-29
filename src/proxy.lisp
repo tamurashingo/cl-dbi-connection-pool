@@ -2,8 +2,16 @@
 (defpackage dbi-cp.proxy
   (:use :cl
         :cl-annot
-        :annot.class
-        :cl-dbi))
+        :annot.class)
+  (:import-from #:cl-dbi
+                #:disconnect
+                #:prepare
+                #:do-sql
+                #:row-count
+                #:begin-transaction
+                #:commit
+                #:rollback))
+
 (in-package :dbi-cp.proxy)
 
 (cl-syntax:use-syntax :annot)
@@ -43,6 +51,12 @@
   (let ((dbi-connection (dbi-connection conn)))
     (do-sql dbi-connection sql params)))
 
+@export
+(defmacro with-transaction (conn &body body)
+  (let ((conn-var (gensym "CONN-VAR")))
+    `(let ((,conn-var (dbi-cp.proxy::dbi-connection ,conn)))
+       (dbi:with-transaction ,conn-var
+         ,@body))))
 
 @proxy
 (defmethod row-count ((conn <dbi-connection-proxy>))

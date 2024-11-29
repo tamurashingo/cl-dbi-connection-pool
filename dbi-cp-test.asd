@@ -12,14 +12,16 @@
   :author "tamura shingo"
   :license "LLGPL"
   :depends-on (:dbi-cp
-               :prove)
+               :rove)
   :components ((:module "t"
                 :components
-                ((:test-file "dbi-cp")
-                 (:test-file "proxy"))))
+                ((:file "dbi-cp")
+                 (:module "proxy"
+                  :components
+                  ((:file "sqlite3")
+                   (:file "mysql")
+                   (:file "postgres"))))))
   :description "Test system for CL-DBI-CONNECTION-POOL"
 
-  :defsystem-depends-on (:prove-asdf)
-  :perform (test-op :after (op c)
-                    (funcall (intern #.(string :run-test-system) :prove-asdf) c)
-                    (asdf:clear-system c)))
+  :perform (test-op (op c)
+             (uiop:symbol-call :rove :run c)))

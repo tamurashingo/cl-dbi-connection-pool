@@ -13,7 +13,8 @@
                 :row-count
                 :begin-transaction
                 :commit
-                :rollback)
+                :rollback
+                :with-transaction)
   (:import-from :dbi-cp.error
                 :<dbi-cp-no-connection>)
   (:import-from :dbi
@@ -24,7 +25,6 @@
                 :rollback-savepoint
                 :release-savepoint
                 :ping
-                :with-transaction
 
                 :<dbi-error>
                 :<dbi-warning>
