@@ -9,8 +9,10 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
       - uses: actions/checkout@v4
-      - name: Checkout and Build
+
+      - name: Build
       - run: docker-compse up -d
 
       - name: Test
