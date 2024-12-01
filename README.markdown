@@ -29,6 +29,9 @@ make connection pool.
     - maximum number of connections
 
 
+ Additionally, it accepts parameters used in cl-dbi.
+
+
 ```common-lisp
 (defparameter *CONNECTION-POOL*
   (dbi-cp:make-dbi-connection-pool :mysql :database-name "dbi-cp" :username "root" :password "password"))
@@ -141,20 +144,6 @@ this function is based on `CL-DBI`
 
 ### Transaction
 
-#### Start transaction
-
-start a transaction.
-
-```common-lisp
-(dbi-cp:begin-transaction connection)
-```
-
-- connection (dbi-cp.proxy:&lt;dbi-connection-proxy&gt;)
-    - database connection
-
-this function is based on `CL-DBI`
-
-
 #### create transaction block
 
 start a transaction and commit at the end of this block.
@@ -173,6 +162,10 @@ this function is based on `CL-DBI`
 
 #### commit
 
+Within `with-transaction`, you can use `commit`.
+Outside of `with-transaction`, `commit` does nothing.
+
+
 ```common-lisp
 (dbi-cp:commit connection)
 ```
@@ -183,6 +176,9 @@ this function is based on `CL-DBI`
 this function is based on `CL-DBI`
 
 #### rollback
+
+Like `commit`, `rollback` is also executed within `with-transaction`.
+
 
 ```common-lisp
 (dbi-cp:rollback connection)
@@ -279,13 +275,11 @@ NIL
 ;;;
 ;;; insert
 ;;;
-CL-USER> (dbi-cp:begin-transaction connection)
-; No value
-
-CL-USER> (let* ((query (dbi-cp:prepare connection "insert into person (id, name) values (?, ?)")))
-           (dbi-cp:execute query (list 1 "user1"))
-           (dbi-cp:execute query (list 2 "user2"))
-           (dbi-cp:execute query (list 3 "user3")))
+CL-USER> (dbi-cp:with-transaction connection
+           (let* ((query (dbi-cp:prepare connection "insert into person (id, name) values (?, ?)")))
+             (dbi-cp:execute query (list 1 "user1"))
+             (dbi-cp:execute query (list 2 "user2"))
+             (dbi-cp:execute query (list 3 "user3"))))
 #<DBD.MYSQL:<DBD-MYSQL-QUERY> {1004B671F3}>
 
 ;;;
@@ -299,12 +293,28 @@ CL-USER> (let* ((query (dbi-cp:prepare connection "select * from person"))
 ;;;
 ;;; rollback
 ;;;
+CL-USER> (dbi-cp:with-transaction connection
+           (dbi-cp:execute (dbi-cp:prepare connection "delete from person"))
+           (rollback connection))
+0
 CL-USER> (dbi-cp:rollback connection)
 ; No value
 CL-USER> (let* ((query (dbi-cp:prepare connection "select count(*) from person"))
                 (result (dbi-cp:execute query)))
            (format T "~A" (dbi-cp:fetch result)))
-(count(*) 0)
+(count(*) 3)
+NIL
+
+;;;
+;;; release connection
+;;;
+CL-USER> (dbi-cp:disconnect connection)
+NIL
+
+;;;
+;;; shutdown connection pool
+;;;
+CL-USER> (dbi-cp:shutdown *pool*)
 NIL
 ```
 
