@@ -1,0 +1,9 @@
+services:
+  dbi-cp-test:
+    image: dbi-cp-test
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    container_name: dbi_cp_test
+    volumes:
+      - ./:/app

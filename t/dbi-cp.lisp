@@ -2,7 +2,7 @@
 (defpackage dbi-cp-test
   (:use :cl
         :dbi-cp
-        :prove))
+        :rove))
 (in-package :dbi-cp-test)
 
 ;; NOTE: To run this test file, execute `(asdf:test-system :dbi-cp)' in your Lisp.
@@ -18,61 +18,60 @@
         count (= (bt-sem:semaphore-count (slot-value pool 'dbi-cp.connectionpool::semaphore))
                  1)))
 
-
-(defparameter *connection-pool-sqlite3*
-  (make-dbi-connection-pool :sqlite3
-                            :database-name ":memory:"
-                            :initial-size 2
-                            :max-size 3))
-
+(defparameter *connection-pool-sqlite3* nil)
 (defparameter *conn1* NIL)
 (defparameter *conn2* NIL)
 (defparameter *conn3* NIL)
 
 
-(plan 11)
+(setup
+  (setf *connection-pool-sqlite3*
+    (make-dbi-connection-pool :sqlite3
+                              :database-name ":memory:"
+                              :initial-size 2
+                              :max-size 3)))
 
-(is (connected *connection-pool-sqlite3*) 2
-    "check initial connection size is 2")
-
-(is (available *connection-pool-sqlite3*) 3
-    "check initial avaiable connection size is 3")
-
-
-;; get connection
-(setf *conn1* (get-connection *connection-pool-sqlite3*))
-
-(is (connected *connection-pool-sqlite3*) 2)
-(is (available *connection-pool-sqlite3*) 2)
+(teardown
+  (shutdown *connection-pool-sqlite3*))
 
 
-;; get connection
-(setf *conn2* (get-connection *connection-pool-sqlite3*))
+(deftest check-connection
+  (ok (eq (connected *connection-pool-sqlite3*) 2)
+      "check initial connection size is 2")
 
-(is (connected *connection-pool-sqlite3*) 2)
-(is (available *connection-pool-sqlite3*) 1)
+  (ok (eq (available *connection-pool-sqlite3*) 3)
+      "check initial avaiable connection size is 3"))
 
+(deftest connection
+  (setf *conn1* (get-connection *connection-pool-sqlite3*))
 
-;; new connection
-(setf *conn3* (get-connection *connection-pool-sqlite3*))
-
-(is (connected *connection-pool-sqlite3*) 3)
-(is (available *connection-pool-sqlite3*) 0)
-
-
-;; no connection available
-(is-type (handler-case (get-connection *connection-pool-sqlite3*)
-           (error (e) e))
-         '<dbi-cp-no-connection>)
+  (ok (eq (connected *connection-pool-sqlite3*) 2))
+  (ok (eq (available *connection-pool-sqlite3*) 2))
 
 
-;; return connection
-;; not disconnect database, connection continues
-(disconnect *conn1*)
-(is (connected *connection-pool-sqlite3*) 3)
-(is (available *connection-pool-sqlite3*) 1)
+  ;; get connection
+  (setf *conn2* (get-connection *connection-pool-sqlite3*))
+
+  (ok (eq (connected *connection-pool-sqlite3*) 2))
+  (ok (eq (available *connection-pool-sqlite3*) 1))
 
 
-(shutdown *connection-pool-sqlite3*)
+  ;; new connection
+  (setf *conn3* (get-connection *connection-pool-sqlite3*))
 
-(finalize)
+  (ok (eq (connected *connection-pool-sqlite3*) 3))
+  (ok (eq (available *connection-pool-sqlite3*) 0))
+
+
+  ;; no connection available
+  (ok (signals (get-connection *connection-pool-sqlite3*) '<dbi-cp-no-connection>))
+
+
+  ;; return connection
+  ;; not disconnect database, connection continues
+  (disconnect *conn1*)
+  (ok (eq (connected *connection-pool-sqlite3*) 3))
+  (ok (eq (available *connection-pool-sqlite3*) 1)))
+
+
+
