@@ -1,6 +1,6 @@
 # CL-DBI-Connection-Pool - connection pool for CL-DBI
 
-[![Build Status](https://travis-ci.org/tamurashingo/cl-dbi-connection-pool.svg?branch=master)](https://travis-ci.org/tamurashingo/cl-dbi-connection-pool)
+![ci workflow](https://github.com/tamurashingo/cl-dbi-connection-pool/actions/workflows/ci.yml/badge.svg)
 
 This library provides connection pool for CL-DBI.
 
