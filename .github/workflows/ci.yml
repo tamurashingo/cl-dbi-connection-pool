@@ -1,0 +1,20 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - '**'
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: docker compose up -d
+
+      - name: Test
+        run: docker compose -f docker-compose.test-runner.yml run --rm --entrypoint rove dbi-cp-test dbi-cp-test.asd
+
