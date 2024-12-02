@@ -327,6 +327,74 @@ This library is available on Quicklisp.
 (ql:quickload :cl-dbi-connection-pool)
 ```
 
+
+## how to develop
+
+require
+
+- make
+- docker
+
+### test
+
+#### prepare
+
+To prepare, create a docker image for testing.
+
+```sh
+make setup
+```
+
+#### run test
+
+```sh
+make test
+```
+
+#### swank server
+
+Start the swank server.
+
+```sh
+make test.swank
+```
+
+connect with SLIME.
+
+```
+M-x slime-connect 127.0.0.1 4005
+```
+
+create connection pool
+
+```common-lisp
+(ql:quickload :cl-dbi-connection-pool)
+
+(defvar *pool-sqlite3* (dbi-cp:make-dbi-connection-pool :sqlite3
+                                                        :database-name "/app/volumes/sqlite3-test.db"))
+
+(defvar *pool-mysql* (dbi-cp:make-dbi-connection-pool :mysql
+                                                      :database-name "test"
+                                                      :username "root"
+                                                      :password "password"
+                                                      :host "mysql-test"
+                                                      :port 3306))
+
+(defvar *pool-postgres* (dbi-cp:make-dbi-connection-pool :postgres
+                                                         :database-name "test"
+                                                         :username "dbicp"
+                                                         :password "password"
+                                                         :host "postgresql-test"
+                                                         :port 5432))
+```
+
+
+#### stop test containers
+
+```sh
+make test.down
+```
+
 ## Author
 
 * tamura shingo (tamura.shingo@gmail.com)
