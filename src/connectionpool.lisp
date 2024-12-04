@@ -31,7 +31,7 @@
               :documentation "T when already connected database")
    (semaphore :accessor semaphore
               :initform (bt-sem:make-semaphore :count 1))
-   (dbi-connection-proxy :type <dbi-connection-proxy>
+   (dbi-connection-proxy :type (or null <dbi-connection-proxy>)
                          :initarg :dbi-connection-proxy
                          :accessor dbi-connection-proxy
                          :initform NIL)))
