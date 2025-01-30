@@ -28,16 +28,19 @@
   ((dbi-connection :type <dbi-connection>
                    :initarg :dbi-connection
                    :accessor dbi-connection)
-   (in-transaction :initform 0)
+   (dirty :initform nil)
+   (auto-commit :initform nil)
    (disconnect-fn :type function
                   :initarg :disconnect-fn
                   :accessor disconnect-fn)))
 
 @proxy
 (defmethod disconnect ((conn <dbi-connection-proxy>))
-  (let ((in-transaction (slot-value conn 'in-transaction))
+  (let ((dirty (slot-value conn 'dirty))
+        (auto-commit (slot-value conn 'auto-commit))
         (disconnect-fn (disconnect-fn conn)))
-    (when (not (= in-transaction 0))
+    (when (and (not auto-commit)
+               dirty)
       (rollback conn))
     (funcall disconnect-fn)))
 
@@ -50,6 +53,17 @@
 (defmethod do-sql ((conn <dbi-connection-proxy>) (sql string) &optional params)
   (let ((dbi-connection (dbi-connection conn)))
     (do-sql dbi-connection sql params)))
+
+
+(defmethod get-autocommit ((conn <dbi-connection-proxy>) &optional (not-supported-error-p t))
+  (let ((dbi-conn (dbi-connection conn)))
+    (get-autocommit-impl dbi-conn not-supported-error-p)))
+
+(defmethod set-autocommit ((conn <dbi-connection-proxy>) mode &optional (not-supported-error-p t))
+  (set-autocommit-impl (dbi-connection conn) mode not-supported-error-p))
+
+(defgeneric set-autocommit-impl (dbi-conn mode not-supported-error-p)
+  (:documentation ""))
 
 @export
 (defmacro with-transaction (conn &body body)
@@ -66,19 +80,16 @@
 
 @proxy
 (defmethod begin-transaction ((conn <dbi-connection-proxy>))
-  (incf (slot-value conn 'in-transaction))
   (let ((dbi-connection (dbi-connection conn)))
     (begin-transaction dbi-connection)))
 
 
 @proxy
 (defmethod commit ((conn <dbi-connection-proxy>))
-  (decf (slot-value conn 'in-transaction))
   (let ((dbi-connection (dbi-connection conn)))
     (commit dbi-connection)))
 
 @proxy
 (defmethod rollback ((conn <dbi-connection-proxy>))
-  (decf (slot-value conn 'in-transaction))
   (let ((dbi-connection (dbi-connection conn)))
     (rollback dbi-connection)))

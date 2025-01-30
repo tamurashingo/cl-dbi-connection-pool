@@ -21,13 +21,22 @@
   :depends-on (:cl-syntax
                :cl-syntax-annot
                :cl-dbi
+               :dbd-mysql
+               :dbd-postgres
+               :dbd-sqlite3
                :bt-semaphore)
   :components ((:module "src"
                 :components
                 ((:file "dbi-cp" :depends-on ("connectionpool"))
                  (:file "connectionpool" :depends-on ("proxy" "error"))
                  (:file "proxy")
-                 (:file "error"))))
+                 (:file "error")
+                 (:module "impl"
+                  :components
+                  ((:file "mysql-impl")
+                   (:file "postgres-impl")
+                   (:file "sqlite3-impl"))))))
+          
   :description "connection pool for CL-DBI"
   :long-description
   #.(with-open-file (stream (merge-pathnames
