@@ -9,7 +9,7 @@
 
 (setup
   (setf *connection-pool* (make-dbi-connection-pool :sqlite3
-                                                    :database-name "/app/volumes/sqlite3-test.db"
+                                                    :database-name "/volumes/sqlite3-test.db"
                                                     :initial-size 2
                                                     :max-size 3)))
 

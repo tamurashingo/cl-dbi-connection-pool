@@ -17,3 +17,5 @@ ENV CL_SOURCE_REGISTRY=/app
 RUN mkdir /app
 WORKDIR /app
 
+RUN mkdir /volumes
+
