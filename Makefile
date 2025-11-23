@@ -3,7 +3,7 @@
 
 .PHONY: setup test.prev test test.down test.console test.swank
 setup:
-	docker build -t dbi-cp-test .
+	docker build -t dbi-cp-test . --no-cache
 
 test.prev:
 	docker-compose down || true

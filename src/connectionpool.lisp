@@ -82,7 +82,11 @@ Example
     ;; connected
     (setf (connect-p pooled-connection) T)
     ;; make connection
-    (setf (dbi-connection dbi-proxy) (funcall connect-fn))
+    (let ((dbi-connection (funcall connect-fn)))
+      (setf (dbi-connection dbi-proxy) dbi-connection)
+      ;; Save initial auto-commit value
+      (setf (slot-value dbi-proxy 'dbi-cp.proxy::initial-auto-commit)
+            (slot-value dbi-connection 'dbi.driver::auto-commit)))
     ;; make disconnect callback
     (setf (disconnect-fn dbi-proxy)
           (lambda ()

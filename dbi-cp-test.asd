@@ -20,6 +20,11 @@
                   :components
                   ((:file "sqlite3")
                    (:file "mysql")
+                   (:file "postgres")))
+                 (:module "transaction"
+                  :components
+                  ((:file "sqlite3")
+                   (:file "mysql")
                    (:file "postgres"))))))
   :description "Test system for CL-DBI-CONNECTION-POOL"
 

@@ -28,17 +28,37 @@
   ((dbi-connection :type <dbi-connection>
                    :initarg :dbi-connection
                    :accessor dbi-connection)
-   (in-transaction :initform 0)
+   (begin-transaction-called :type boolean
+                             :initform nil
+                             :documentation "Flag indicating if begin-transaction was called")
+   (initial-auto-commit :type boolean
+                        :initarg :initial-auto-commit
+                        :documentation "Initial value of auto-commit flag")
    (disconnect-fn :type function
                   :initarg :disconnect-fn
                   :accessor disconnect-fn)))
 
 @proxy
 (defmethod disconnect ((conn <dbi-connection-proxy>))
-  (let ((in-transaction (slot-value conn 'in-transaction))
+  (let ((begin-transaction-called (slot-value conn 'begin-transaction-called))
+        (initial-auto-commit (slot-value conn 'initial-auto-commit))
+        (dbi-connection (dbi-connection conn))
         (disconnect-fn (disconnect-fn conn)))
-    (when (not (= in-transaction 0))
-      (rollback conn))
+
+    ;; Rollback only if begin-transaction was called without commit/rollback
+    (when begin-transaction-called
+      (handler-case
+          (do-sql dbi-connection "ROLLBACK")
+        (error (e)
+          ;; Ignore errors (already outside transaction, etc.)
+          (declare (ignore e))))
+      (setf (slot-value conn 'begin-transaction-called) nil))
+
+    ;; Restore auto-commit flag to initial value
+    (setf (slot-value dbi-connection 'dbi.driver::auto-commit)
+          initial-auto-commit)
+
+    ;; Return to pool
     (funcall disconnect-fn)))
 
 @proxy
@@ -53,10 +73,12 @@
 
 @export
 (defmacro with-transaction (conn &body body)
-  (let ((conn-var (gensym "CONN-VAR")))
-    `(let ((,conn-var (dbi-cp.proxy::dbi-connection ,conn)))
-       (dbi:with-transaction ,conn-var
-         ,@body))))
+  `(unwind-protect
+       (dbi:with-transaction (dbi-cp.proxy::dbi-connection ,conn)
+         ,@body)
+     ;; Clear begin-transaction-called flag on exit
+     ;; because commit/rollback was executed by cl-dbi
+     (setf (slot-value ,conn 'dbi-cp.proxy::begin-transaction-called) nil)))
 
 @proxy
 (defmethod row-count ((conn <dbi-connection-proxy>))
@@ -66,19 +88,22 @@
 
 @proxy
 (defmethod begin-transaction ((conn <dbi-connection-proxy>))
-  (incf (slot-value conn 'in-transaction))
+  ;; Warn that begin-transaction is not recommended
+  (warn "begin-transaction is not recommended with cl-dbi-connection-pool. ~
+         Use with-transaction instead.")
+  ;; Set flag to track begin-transaction was called
+  (setf (slot-value conn 'begin-transaction-called) t)
   (let ((dbi-connection (dbi-connection conn)))
+    ;; Call the actual begin-transaction
     (begin-transaction dbi-connection)))
 
 
 @proxy
 (defmethod commit ((conn <dbi-connection-proxy>))
-  (decf (slot-value conn 'in-transaction))
   (let ((dbi-connection (dbi-connection conn)))
     (commit dbi-connection)))
 
 @proxy
 (defmethod rollback ((conn <dbi-connection-proxy>))
-  (decf (slot-value conn 'in-transaction))
   (let ((dbi-connection (dbi-connection conn)))
     (rollback dbi-connection)))
