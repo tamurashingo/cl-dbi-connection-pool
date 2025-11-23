@@ -5,8 +5,15 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: password
       MYSQL_DATABASE: test
+    command: --max_allowed_packet=1048576
     tmpfs:
       - /var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-ppassword"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
   postgresql-test:
     image: postgres:16
     container_name: dbi-cp_test_postgresql
@@ -18,3 +25,9 @@ services:
     tmpfs:
       - /var/lib/postgresql/data
       - /var/log
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbicp"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s

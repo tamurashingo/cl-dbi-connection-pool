@@ -21,7 +21,8 @@
   :depends-on (:cl-syntax
                :cl-syntax-annot
                :cl-dbi
-               :bt-semaphore)
+               :bt-semaphore
+               :babel)
   :components ((:module "src"
                 :components
                 ((:file "dbi-cp" :depends-on ("connectionpool"))
