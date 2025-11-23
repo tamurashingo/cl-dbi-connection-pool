@@ -7,3 +7,5 @@ services:
     container_name: dbi_cp_test
     volumes:
       - ./:/app
+    tmpfs:
+      - /volumes

@@ -3,17 +3,10 @@
 
 .PHONY: setup test.prev test test.down test.console test.swank
 setup:
-	docker build -t dbi-cp-test .
+	docker build -t dbi-cp-test . --no-cache
 
 test.prev:
 	docker-compose down || true
-	rm -rf ./volumes
-	mkdir ./volumes
-	mkdir ./volumes/mysql
-	mkdir ./volumes/postgresql
-	mkdir ./volumes/postgresql/data
-	mkdir ./volumes/postgresql/log
-	sleep 1
 	docker-compose up -d
 	echo wait...
 	sleep 10
