@@ -20,6 +20,7 @@
                   :components
                   ((:file "sqlite3")
                    (:file "mysql")
+                   (:file "mysql-max-allowed-packet")
                    (:file "postgres")))
                  (:module "transaction"
                   :components

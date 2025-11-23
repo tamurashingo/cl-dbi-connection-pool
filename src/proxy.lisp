@@ -10,7 +10,8 @@
                 #:row-count
                 #:begin-transaction
                 #:commit
-                #:rollback))
+                #:rollback
+                #:execute))
 
 (in-package :dbi-cp.proxy)
 
@@ -36,7 +37,12 @@
                         :documentation "Initial value of auto-commit flag")
    (disconnect-fn :type function
                   :initarg :disconnect-fn
-                  :accessor disconnect-fn)))
+                  :accessor disconnect-fn)
+   (connection-pool :type t
+                    :initform nil
+                    :initarg :connection-pool
+                    :accessor connection-pool
+                    :documentation "Reference to the parent connection pool")))
 
 @proxy
 (defmethod disconnect ((conn <dbi-connection-proxy>))
@@ -107,3 +113,80 @@
 (defmethod rollback ((conn <dbi-connection-proxy>))
   (let ((dbi-connection (dbi-connection conn)))
     (rollback dbi-connection)))
+
+@export
+(defun get-max-allowed-packet (conn)
+  "Get the MySQL max_allowed_packet value in bytes.
+   Returns NIL for non-MySQL connections or if the value is not available."
+  (when (typep conn '<dbi-connection-proxy>)
+    (let ((pool (connection-pool conn)))
+      (when pool
+        (funcall (find-symbol "MAX-ALLOWED-PACKET" "DBI-CP.CONNECTIONPOOL") pool)))))
+
+@export
+(defun check-packet-size (conn sql &optional params)
+  "Check if the query size is within max_allowed_packet limit.
+   Returns T if within limit, NIL if exceeds limit or limit is not available."
+  (let ((max-packet (get-max-allowed-packet conn)))
+    (if max-packet
+        (let ((estimated-size (estimate-query-size sql params)))
+          (<= estimated-size max-packet))
+        t)))
+
+(defun estimate-query-size (sql params)
+  "Estimate the size of a query in bytes.
+   This is a conservative estimate."
+  (let ((sql-size (length (babel:string-to-octets sql :encoding :utf-8)))
+        (params-size 0))
+    (when params
+      (dolist (param params)
+        (incf params-size
+              (cond
+                ((stringp param)
+                 (length (babel:string-to-octets param :encoding :utf-8)))
+                ((vectorp param)
+                 (length param))
+                ((numberp param)
+                 20)
+                (t
+                 100)))))
+    (+ sql-size params-size)))
+
+@export
+(defun packet-size-exceeded-p (conn sql &optional params)
+  "Check if the query size exceeds max_allowed_packet limit.
+   Returns T if exceeds, NIL otherwise."
+  (let ((max-packet (get-max-allowed-packet conn)))
+    (if max-packet
+        (let ((estimated-size (estimate-query-size sql params)))
+          (> estimated-size max-packet))
+        nil)))
+
+(defmethod execute :before ((query dbi.driver:<dbi-query>) &optional params)
+  "Warn if query size is approaching max_allowed_packet limit"
+  (let* ((connection (slot-value query 'dbi.driver::connection))
+         (proxy (find-connection-proxy connection)))
+    (when proxy
+      (let ((max-packet (get-max-allowed-packet proxy)))
+        (when max-packet
+          (let* ((sql (slot-value query 'dbi.driver::sql))
+                 (estimated-size (estimate-query-size sql params))
+                 (threshold (* max-packet 0.9)))
+            (when (> estimated-size threshold)
+              (warn "Query size (~A bytes) is approaching max_allowed_packet (~A bytes)~%Query: ~A"
+                    estimated-size max-packet sql))))))))
+
+(defvar *connection-proxy-map* (make-hash-table :test 'eq :weakness :key)
+  "Weak hash table mapping DBI connections to their proxies")
+
+(defun register-connection-proxy (dbi-connection proxy)
+  "Register a DBI connection to proxy mapping"
+  (setf (gethash dbi-connection *connection-proxy-map*) proxy))
+
+(defun unregister-connection-proxy (dbi-connection)
+  "Unregister a DBI connection to proxy mapping"
+  (remhash dbi-connection *connection-proxy-map*))
+
+(defun find-connection-proxy (dbi-connection)
+  "Find the connection proxy for a given DBI connection"
+  (gethash dbi-connection *connection-proxy-map*))

@@ -22,7 +22,15 @@
          :documentation "array of <pooled-connection>")
    (connect-fn :type function
                :initarg :connect-fn
-               :documentation "function what connecto to database ")))
+               :documentation "function what connecto to database ")
+   (driver-name :type keyword
+                :initarg :driver-name
+                :accessor driver-name
+                :documentation "Database driver name (:mysql, :postgres, :sqlite3, etc.)")
+   (max-allowed-packet :type (or null integer)
+                       :initform nil
+                       :accessor max-allowed-packet
+                       :documentation "MySQL max_allowed_packet value in bytes. NIL for non-MySQL connections")))
 
 (defclass <pooled-connection> ()
   ((connect-p :type boolean
@@ -50,35 +58,42 @@ Example
          (dbi-connection-pool
           (make-instance '<dbi-connection-pool>
                          :pool pool
+                         :driver-name driver-name
                          :connect-fn (lambda ()
                                        (apply #'dbi:connect driver-name params)))))
     ;; create <pooled-connection> instance
-    (%make-pooledconnection-array! pool max-size)
+    (%make-pooledconnection-array! pool max-size dbi-connection-pool)
     ;; connect initial-size connection
     (%make-connection-array! dbi-connection-pool initial-size)
+
+    ;; Retrieve max_allowed_packet for MySQL
+    (when (eq driver-name :mysql)
+      (%retrieve-max-allowed-packet! dbi-connection-pool))
+
     dbi-connection-pool))
 
 
-(defun %make-pooledconnection-array! (cp-array array-size)
+(defun %make-pooledconnection-array! (cp-array array-size dbi-connection-pool)
   "create <pooled-connection> instance"
   (loop for idx from 0 below array-size
-        do (let* ((dbi-cp (make-instance '<dbi-connection-proxy>))
+        do (let* ((dbi-cp (make-instance '<dbi-connection-proxy>
+                                         :connection-pool dbi-connection-pool))
                   (pooled-connection (make-instance '<pooled-connection>
                                                     :dbi-connection-proxy dbi-cp)))
              (setf (aref cp-array idx) pooled-connection))))
 
 (defun %make-connection-array! (dbi-connection-pool connection-count)
   "create connection array"
-  (let ((connect-fn (slot-value dbi-connection-pool 'connect-fn))
-        (pool (slot-value dbi-connection-pool 'pool)))
+  (let ((pool (slot-value dbi-connection-pool 'pool)))
     (loop for idx from 0 below connection-count
           do (let ((pooled-connection (aref pool idx)))
-               (%make-connection! pooled-connection connect-fn)))))
+               (%make-connection! pooled-connection dbi-connection-pool)))))
 
-(defun %make-connection! (pooled-connection connect-fn)
+(defun %make-connection! (pooled-connection dbi-connection-pool)
   "connect database and set parameters"
   (let ((semaphore (semaphore pooled-connection))
-        (dbi-proxy (dbi-connection-proxy pooled-connection)))
+        (dbi-proxy (dbi-connection-proxy pooled-connection))
+        (connect-fn (slot-value dbi-connection-pool 'connect-fn)))
     ;; connected
     (setf (connect-p pooled-connection) T)
     ;; make connection
@@ -86,7 +101,9 @@ Example
       (setf (dbi-connection dbi-proxy) dbi-connection)
       ;; Save initial auto-commit value
       (setf (slot-value dbi-proxy 'dbi-cp.proxy::initial-auto-commit)
-            (slot-value dbi-connection 'dbi.driver::auto-commit)))
+            (slot-value dbi-connection 'dbi.driver::auto-commit))
+      ;; Register proxy for connection
+      (dbi-cp.proxy::register-connection-proxy dbi-connection dbi-proxy))
     ;; make disconnect callback
     (setf (disconnect-fn dbi-proxy)
           (lambda ()
@@ -112,7 +129,24 @@ Example
         else
           do (let ((semaphore (semaphore pool)))
                (when (bt-sem:try-semaphore semaphore)
-                 (%make-connection! pool (slot-value conn 'connect-fn))
+                 (%make-connection! pool conn)
                  (return (dbi-connection-proxy pool))))
         end
         finally (return (error '<dbi-cp-no-connection>))))
+
+(defun %retrieve-max-allowed-packet! (dbi-connection-pool)
+  "Retrieve max_allowed_packet from MySQL server"
+  (handler-case
+      (let ((proxy (get-connection dbi-connection-pool)))
+        (unwind-protect
+             (let* ((dbi-connection (dbi-connection proxy))
+                    (query (dbi:prepare dbi-connection
+                                        "SHOW VARIABLES LIKE 'max_allowed_packet'"))
+                    (result (dbi:execute query))
+                    (row (dbi:fetch result)))
+               (when row
+                 (setf (max-allowed-packet dbi-connection-pool)
+                       (parse-integer (getf row :|Value|)))))
+          (disconnect proxy)))
+    (error (e)
+      (warn "Failed to retrieve max_allowed_packet: ~A" e))))

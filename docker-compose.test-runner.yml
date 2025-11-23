@@ -9,3 +9,18 @@ services:
       - ./:/app
     tmpfs:
       - /volumes
+    depends_on:
+      mysql-test:
+        condition: service_healthy
+      postgresql-test:
+        condition: service_healthy
+
+  mysql-test:
+    extends:
+      file: docker-compose.yml
+      service: mysql-test
+
+  postgresql-test:
+    extends:
+      file: docker-compose.yml
+      service: postgresql-test

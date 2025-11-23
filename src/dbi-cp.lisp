@@ -14,9 +14,13 @@
                 :begin-transaction
                 :commit
                 :rollback
-                :with-transaction)
+                :with-transaction
+                :get-max-allowed-packet
+                :check-packet-size
+                :packet-size-exceeded-p)
   (:import-from :dbi-cp.error
-                :<dbi-cp-no-connection>)
+                :<dbi-cp-no-connection>
+                :<dbi-cp-packet-size-exceeded>)
   (:import-from :dbi
                 :execute
                 :fetch
@@ -54,8 +58,12 @@
            :with-transaction
            :disconnect
            :shutdown
+           :get-max-allowed-packet
+           :check-packet-size
+           :packet-size-exceeded-p
 
            :<dbi-cp-no-connection>
+           :<dbi-cp-packet-size-exceeded>
 
            :<dbi-error>
            :<dbi-warning>

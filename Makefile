@@ -8,8 +8,6 @@ setup:
 test.prev:
 	docker-compose down || true
 	docker-compose up -d
-	echo wait...
-	sleep 10
 
 test: test.prev
 	@echo "Running tests..."
