@@ -63,7 +63,7 @@
   (ok (eq (available *connection-pool-sqlite3*) 0))
 
 
-  ;; no connection available
+  ;; no connection available (will wait for timeout)
   (ok (signals (get-connection *connection-pool-sqlite3*) '<dbi-cp-no-connection>))
 
 
@@ -73,5 +73,111 @@
   (ok (eq (connected *connection-pool-sqlite3*) 3))
   (ok (eq (available *connection-pool-sqlite3*) 1)))
 
+(deftest checkout-timeout-immediate
+  (testing "Connection acquired immediately when available"
+    (let* ((pool (make-dbi-connection-pool :sqlite3
+                                           :database-name ":memory:"
+                                           :initial-size 2
+                                           :max-size 2
+                                           :checkout-timeout 5))
+           (start-time (get-internal-real-time))
+           (conn (get-connection pool))
+           (elapsed-time (/ (- (get-internal-real-time) start-time)
+                           internal-time-units-per-second)))
+      (ok conn "Connection should be acquired")
+      (ok (< elapsed-time 0.5) "Connection should be acquired immediately (< 0.5s)")
+      (disconnect conn)
+      (shutdown pool))))
 
+(deftest checkout-timeout-wait-and-acquire
+  (testing "Connection acquired after waiting when returned by another thread"
+    (let* ((pool (make-dbi-connection-pool :sqlite3
+                                           :database-name ":memory:"
+                                           :initial-size 1
+                                           :max-size 1
+                                           :checkout-timeout 5))
+           (conn1 (get-connection pool))
+           (thread-result nil)
+           (start-time nil))
+      ;; Start a thread that will try to get a connection (will wait)
+      (let ((thread (bt:make-thread
+                     (lambda ()
+                       (setf start-time (get-internal-real-time))
+                       (handler-case
+                           (let ((conn2 (get-connection pool)))
+                             (setf thread-result :success)
+                             (disconnect conn2))
+                         (error (e)
+                           (setf thread-result (format nil "Error: ~A" e))))))))
+        ;; Wait a bit to ensure the thread is waiting
+        (sleep 0.5)
+        ;; Return the first connection after 1 second
+        (sleep 0.5)
+        (disconnect conn1)
+        ;; Wait for the thread to complete
+        (bt:join-thread thread)
+        (let ((elapsed-time (/ (- (get-internal-real-time) start-time)
+                              internal-time-units-per-second)))
+          (ok (eq thread-result :success) "Thread should acquire connection")
+          (ok (< elapsed-time 5) "Connection should be acquired before timeout")))
+      (shutdown pool))))
+
+(deftest checkout-timeout-expires
+  (testing "Timeout occurs when no connection becomes available"
+    (let* ((pool (make-dbi-connection-pool :sqlite3
+                                           :database-name ":memory:"
+                                           :initial-size 1
+                                           :max-size 1
+                                           :checkout-timeout 2))
+           (conn1 (get-connection pool)))
+      ;; All connections are in use, timeout should occur
+      (let ((start-time (get-internal-real-time)))
+        (ok (signals (get-connection pool) '<dbi-cp-no-connection>)
+            "Should throw <dbi-cp-no-connection> error")
+        (let ((elapsed-time (/ (- (get-internal-real-time) start-time)
+                              internal-time-units-per-second)))
+          (ok (>= elapsed-time 2) "Should wait at least 2 seconds")
+          (ok (<= elapsed-time 3) "Should timeout around 2 seconds")))
+      (disconnect conn1)
+      (shutdown pool))))
+
+(deftest checkout-timeout-custom-value
+  (testing "Custom checkout-timeout value is respected"
+    (let* ((pool (make-dbi-connection-pool :sqlite3
+                                           :database-name ":memory:"
+                                           :initial-size 1
+                                           :max-size 1
+                                           :checkout-timeout 1)))
+      (ok (= (checkout-timeout pool) 1)
+          "Checkout timeout should be set to 1 second")
+      (shutdown pool))))
+
+(deftest checkout-timeout-concurrent-requests
+  (testing "Multiple concurrent requests with timeout"
+    (let* ((pool (make-dbi-connection-pool :sqlite3
+                                           :database-name ":memory:"
+                                           :initial-size 2
+                                           :max-size 2
+                                           :checkout-timeout 10))
+           (threads nil)
+           (success-count 0)
+           (lock (bt:make-lock)))
+      ;; Create 5 threads competing for 2 connections
+      (dotimes (i 5)
+        (push (bt:make-thread
+               (lambda ()
+                 (handler-case
+                     (let ((conn (get-connection pool)))
+                       (sleep 0.5) ; Hold connection briefly
+                       (disconnect conn)
+                       (bt:with-lock-held (lock)
+                         (incf success-count)))
+                   (error (e)
+                     (format t "Thread error: ~A~%" e)))))
+              threads))
+      ;; Wait for all threads to complete
+      (dolist (thread threads)
+        (bt:join-thread thread))
+      (ok (= success-count 5) "All threads should eventually acquire connections")
+      (shutdown pool))))
 

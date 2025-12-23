@@ -5,7 +5,8 @@
   (:import-from :dbi-cp.connectionpool
                 :make-dbi-connection-pool
                 :shutdown
-                :get-connection)
+                :get-connection
+                :checkout-timeout)
   (:import-from :dbi-cp.proxy
                 :disconnect
                 :prepare
@@ -58,6 +59,7 @@
            :with-transaction
            :disconnect
            :shutdown
+           :checkout-timeout
            :get-max-allowed-packet
            :check-packet-size
            :packet-size-exceeded-p
