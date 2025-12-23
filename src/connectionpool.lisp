@@ -30,7 +30,12 @@
    (max-allowed-packet :type (or null integer)
                        :initform nil
                        :accessor max-allowed-packet
-                       :documentation "MySQL max_allowed_packet value in bytes. NIL for non-MySQL connections")))
+                       :documentation "MySQL max_allowed_packet value in bytes. NIL for non-MySQL connections")
+   (checkout-timeout :type integer
+                     :initarg :checkout-timeout
+                     :initform 30
+                     :accessor checkout-timeout
+                     :documentation "Maximum wait time (in seconds) when acquiring a connection from the pool")))
 
 (defclass <pooled-connection> ()
   ((connect-p :type boolean
@@ -45,7 +50,7 @@
                          :initform NIL)))
 
 @export
-(defun make-dbi-connection-pool (driver-name &rest params &key database-name username password (initial-size 10) (max-size 10) &allow-other-keys)
+(defun make-dbi-connection-pool (driver-name &rest params &key database-name username password (initial-size 10) (max-size 10) (checkout-timeout 30) &allow-other-keys)
   "make connection pool
 
 Example
@@ -53,12 +58,14 @@ Example
   ;; remove addtional parameter for original dbi:connect argument
   (remf params :initial-size)
   (remf params :max-size)
+  (remf params :checkout-timeout)
 
   (let* ((pool (make-array max-size :initial-element NIL))
          (dbi-connection-pool
           (make-instance '<dbi-connection-pool>
                          :pool pool
                          :driver-name driver-name
+                         :checkout-timeout checkout-timeout
                          :connect-fn (lambda ()
                                        (apply #'dbi:connect driver-name params)))))
     ;; create <pooled-connection> instance
@@ -121,18 +128,29 @@ Example
 @export
 (defmethod get-connection ((conn <dbi-connection-pool>))
   "get <dbi-connection-proxy> from connection pool"
-  (loop for pool across (slot-value conn 'pool)
-        if (connect-p pool)
-          do (let ((semaphore (semaphore pool)))
-               (when (bt-sem:try-semaphore semaphore)
-                 (return (dbi-connection-proxy pool))))
-        else
-          do (let ((semaphore (semaphore pool)))
-               (when (bt-sem:try-semaphore semaphore)
-                 (%make-connection! pool conn)
-                 (return (dbi-connection-proxy pool))))
-        end
-        finally (return (error '<dbi-cp-no-connection>))))
+  (let ((timeout-time (+ (get-internal-real-time)
+                         (* (checkout-timeout conn) internal-time-units-per-second)))
+        (sleep-interval 0.1))
+    (loop
+      ;; Attempt to acquire connection
+      (loop for pool across (slot-value conn 'pool)
+            if (connect-p pool)
+              do (let ((semaphore (semaphore pool)))
+                   (when (bt-sem:try-semaphore semaphore)
+                     (return-from get-connection (dbi-connection-proxy pool))))
+            else
+              do (let ((semaphore (semaphore pool)))
+                   (when (bt-sem:try-semaphore semaphore)
+                     (%make-connection! pool conn)
+                     (return-from get-connection (dbi-connection-proxy pool))))
+            end)
+
+      ;; Check timeout
+      (when (>= (get-internal-real-time) timeout-time)
+        (error '<dbi-cp-no-connection>))
+
+      ;; Sleep briefly and retry
+      (sleep sleep-interval))))
 
 (defun %retrieve-max-allowed-packet! (dbi-connection-pool)
   "Retrieve max_allowed_packet from MySQL server"

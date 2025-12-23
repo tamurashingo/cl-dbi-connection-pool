@@ -1,4 +1,4 @@
-FROM fukamachi/sbcl
+FROM fukamachi/sbcl:2.5.10
 
 RUN apt-get update && apt-get install -y \
   default-libmysqlclient-dev \
