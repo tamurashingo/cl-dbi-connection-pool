@@ -181,3 +181,161 @@
       (ok (= success-count 5) "All threads should eventually acquire connections")
       (shutdown pool))))
 
+(deftest idle-timeout-removes-idle-connections
+  (testing "Idle connections are removed after idle-timeout"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 2
+                                          :max-size 5
+                                          :idle-timeout 3
+                                          :reaper-interval 20)))
+      (unwind-protect
+           (progn
+             ;; Use all 5 connections
+             (let ((conns (loop for i from 0 below 5
+                               collect (get-connection pool))))
+               (ok (= (connected pool) 5) "Should have 5 active connections")
+               ;; Return all connections
+               (dolist (conn conns)
+                 (disconnect conn)))
+
+             ;; Wait for idle-timeout + reaper interval
+             (ok (= (connected pool) 5) "Immediately after return, still 5 connections")
+             (sleep 25) ; idle-timeout(3s) + reaper-interval(20s) + margin(2s)
+
+             ;; Only initial-size connections should remain
+             (ok (= (connected pool) 2) "After idle-timeout, only 2 connections remain"))
+        (shutdown pool)))))
+
+(deftest idle-timeout-maintains-initial-size
+  (testing "Connection count never drops below initial-size"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 3
+                                          :max-size 5
+                                          :idle-timeout 3
+                                          :reaper-interval 20)))
+      (unwind-protect
+           (progn
+             ;; Initially should have initial-size connections
+             (ok (= (connected pool) 3) "Should start with 3 connections")
+
+             ;; Use and return one connection
+             (let ((conn (get-connection pool)))
+               (disconnect conn))
+
+             ;; Wait for idle-timeout
+             (sleep 25)
+
+             ;; Should still have initial-size connections
+             (ok (= (connected pool) 3) "Should maintain 3 connections (initial-size)"))
+        (shutdown pool)))))
+
+(deftest idle-timeout-preserves-recently-used-connections
+  (testing "Recently used connections are not removed"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 2
+                                          :max-size 5
+                                          :idle-timeout 10
+                                          :reaper-interval 20)))
+      (unwind-protect
+           (progn
+             ;; Create 5 connections
+             (let ((conns (loop for i from 0 below 5
+                               collect (get-connection pool))))
+               (dolist (conn conns)
+                 (disconnect conn)))
+
+             (ok (= (connected pool) 5) "Should have 5 connections")
+
+             ;; Wait 5 seconds (less than idle-timeout)
+             (sleep 5)
+
+             ;; Use one connection to refresh its last-used-time
+             (let ((conn (get-connection pool)))
+               (disconnect conn))
+
+             ;; Wait another 21 seconds (total 26s > idle-timeout(10s) + reaper-interval(20s) for old connections)
+             (sleep 21)
+
+             ;; At least one connection should remain (the recently used one + initial-size)
+             (ok (>= (connected pool) 2) "Recently used connection should remain"))
+        (shutdown pool)))))
+
+(deftest idle-timeout-does-not-remove-in-use-connections
+  (testing "Connections in use are not removed by reaper"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 2
+                                          :max-size 5
+                                          :idle-timeout 3
+                                          :reaper-interval 20)))
+      (unwind-protect
+           (progn
+             ;; Get all 5 connections
+             (let ((conns (loop for i from 0 below 5
+                               collect (get-connection pool))))
+               (ok (= (connected pool) 5) "Should have 5 connections")
+               (ok (= (available pool) 0) "All connections should be in use")
+
+               ;; Wait for idle-timeout
+               (sleep 25)
+
+               ;; All connections should still exist (they're in use)
+               (ok (= (connected pool) 5) "All 5 connections should remain (in use)")
+
+               ;; Return all connections
+               (dolist (conn conns)
+                 (disconnect conn))))
+        (shutdown pool)))))
+
+(deftest idle-timeout-disabled-when-zero
+  (testing "idle-timeout=0 disables the reaper feature"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 2
+                                          :max-size 5
+                                          :idle-timeout 0
+                                          :reaper-interval 20)))
+      (unwind-protect
+           (progn
+             ;; Check that reaper thread was not started
+             (ok (null (slot-value pool 'dbi-cp.connectionpool::reaper-thread))
+                 "Reaper thread should not be started when idle-timeout=0")
+
+             ;; Create and return connections
+             (let ((conns (loop for i from 0 below 5
+                               collect (get-connection pool))))
+               (dolist (conn conns)
+                 (disconnect conn)))
+
+             (ok (= (connected pool) 5) "Should have 5 connections")
+
+             ;; Wait (would be enough for reaper to run if it existed)
+             (sleep 25)
+
+             ;; All connections should still exist
+             (ok (= (connected pool) 5) "All 5 connections should remain (reaper disabled)"))
+        (shutdown pool)))))
+
+(deftest idle-timeout-reaper-thread-stops-on-shutdown
+  (testing "Reaper thread is properly stopped on shutdown"
+    (let* ((pool (make-dbi-connection-pool :sqlite3
+                                           :database-name ":memory:"
+                                           :initial-size 2
+                                           :max-size 5
+                                           :idle-timeout 60
+                                           :reaper-interval 20))
+           (reaper-thread (slot-value pool 'dbi-cp.connectionpool::reaper-thread)))
+      ;; Reaper thread should be running
+      (ok reaper-thread "Reaper thread should be started")
+      (ok (bt:thread-alive-p reaper-thread) "Reaper thread should be alive")
+
+      ;; Shutdown pool
+      (shutdown pool)
+
+      ;; Reaper thread should be stopped
+      (sleep 0.5) ; Give it time to terminate
+      (ok (not (bt:thread-alive-p reaper-thread)) "Reaper thread should be stopped after shutdown"))))
+

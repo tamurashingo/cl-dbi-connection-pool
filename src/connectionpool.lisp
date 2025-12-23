@@ -35,7 +35,25 @@
                      :initarg :checkout-timeout
                      :initform 30
                      :accessor checkout-timeout
-                     :documentation "Maximum wait time (in seconds) when acquiring a connection from the pool")))
+                     :documentation "Maximum wait time (in seconds) when acquiring a connection from the pool")
+   (initial-size :type integer
+                 :initarg :initial-size
+                 :accessor initial-size
+                 :documentation "Minimum number of connections to maintain in the pool")
+   (idle-timeout :type integer
+                 :initarg :idle-timeout
+                 :initform 600
+                 :accessor idle-timeout
+                 :documentation "Time in seconds after which idle connections are removed from the pool")
+   (reaper-interval :type integer
+                    :initarg :reaper-interval
+                    :initform 60
+                    :accessor reaper-interval
+                    :documentation "Interval in seconds between reaper thread executions")
+   (reaper-thread :type (or null bt:thread)
+                  :initform nil
+                  :accessor reaper-thread
+                  :documentation "Background thread that removes idle connections")))
 
 (defclass <pooled-connection> ()
   ((connect-p :type boolean
@@ -47,10 +65,14 @@
    (dbi-connection-proxy :type (or null <dbi-connection-proxy>)
                          :initarg :dbi-connection-proxy
                          :accessor dbi-connection-proxy
-                         :initform NIL)))
+                         :initform NIL)
+   (last-used-time :type (or null integer)
+                   :initform nil
+                   :accessor last-used-time
+                   :documentation "Last time this connection was used (universal-time)")))
 
 @export
-(defun make-dbi-connection-pool (driver-name &rest params &key database-name username password (initial-size 10) (max-size 10) (checkout-timeout 30) &allow-other-keys)
+(defun make-dbi-connection-pool (driver-name &rest params &key database-name username password (initial-size 10) (max-size 10) (checkout-timeout 30) (idle-timeout 600) (reaper-interval 60) &allow-other-keys)
   "make connection pool
 
 Example
@@ -59,6 +81,8 @@ Example
   (remf params :initial-size)
   (remf params :max-size)
   (remf params :checkout-timeout)
+  (remf params :idle-timeout)
+  (remf params :reaper-interval)
 
   (let* ((pool (make-array max-size :initial-element NIL))
          (dbi-connection-pool
@@ -66,6 +90,9 @@ Example
                          :pool pool
                          :driver-name driver-name
                          :checkout-timeout checkout-timeout
+                         :initial-size initial-size
+                         :idle-timeout idle-timeout
+                         :reaper-interval reaper-interval
                          :connect-fn (lambda ()
                                        (apply #'dbi:connect driver-name params)))))
     ;; create <pooled-connection> instance
@@ -76,6 +103,10 @@ Example
     ;; Retrieve max_allowed_packet for MySQL
     (when (eq driver-name :mysql)
       (%retrieve-max-allowed-packet! dbi-connection-pool))
+
+    ;; Start reaper thread if idle-timeout is enabled
+    (when (> idle-timeout 0)
+      (%start-reaper-thread dbi-connection-pool))
 
     dbi-connection-pool))
 
@@ -114,11 +145,17 @@ Example
     ;; make disconnect callback
     (setf (disconnect-fn dbi-proxy)
           (lambda ()
+            (setf (last-used-time pooled-connection) (get-universal-time))
             (bt-sem:signal-semaphore semaphore)))))
 
 @export
 (defmethod shutdown ((conn <dbi-connection-pool>))
   "disconnect all connections"
+  ;; Stop reaper thread first
+  (when (reaper-thread conn)
+    (bt:destroy-thread (reaper-thread conn))
+    (setf (reaper-thread conn) nil))
+  ;; Disconnect all connections
   (loop for pool across (slot-value conn 'pool)
         when (connect-p pool)
              do (let* ((dbi-connection-proxy (dbi-connection-proxy pool))
@@ -168,3 +205,57 @@ Example
           (disconnect proxy)))
     (error (e)
       (warn "Failed to retrieve max_allowed_packet: ~A" e))))
+
+(defun %start-reaper-thread (dbi-connection-pool)
+  "Start background thread to reap idle connections"
+  (setf (reaper-thread dbi-connection-pool)
+        (bt:make-thread
+         (lambda ()
+           (%reaper-loop dbi-connection-pool))
+         :name "dbi-cp-reaper")))
+
+(defun %reaper-loop (dbi-connection-pool)
+  "Reaper thread main loop - checks for idle connections periodically"
+  (let ((interval (reaper-interval dbi-connection-pool)))
+    (loop
+      (sleep interval)
+      (handler-case
+          (%reap-idle-connections dbi-connection-pool)
+        (error (e)
+          (warn "Reaper thread error: ~A" e))))))
+
+(defun %reap-idle-connections (dbi-connection-pool)
+  "Remove idle connections exceeding idle-timeout"
+  (let* ((pool (slot-value dbi-connection-pool 'pool))
+         (idle-timeout (idle-timeout dbi-connection-pool))
+         (initial-size (initial-size dbi-connection-pool))
+         (current-time (get-universal-time))
+         (active-count 0))
+
+    ;; Count active connections
+    (loop for pc across pool
+          when (connect-p pc)
+            do (incf active-count))
+
+    ;; Remove idle connections (but keep initial-size)
+    (loop for pc across pool
+          when (and (connect-p pc)
+                    (> active-count initial-size)
+                    (last-used-time pc)
+                    (> (- current-time (last-used-time pc)) idle-timeout))
+            do (when (bt-sem:try-semaphore (semaphore pc))
+                 (%disconnect-pooled-connection pc)
+                 (decf active-count)))))
+
+(defun %disconnect-pooled-connection (pooled-connection)
+  "Disconnect a pooled connection"
+  (let* ((dbi-proxy (dbi-connection-proxy pooled-connection))
+         (dbi-connection (dbi-connection dbi-proxy)))
+    (when dbi-connection
+      (handler-case
+          (dbi:disconnect dbi-connection)
+        (error (e)
+          (warn "Error disconnecting pooled connection: ~A" e))))
+    (setf (connect-p pooled-connection) nil)
+    (setf (last-used-time pooled-connection) nil)
+    (bt-sem:signal-semaphore (semaphore pooled-connection))))
