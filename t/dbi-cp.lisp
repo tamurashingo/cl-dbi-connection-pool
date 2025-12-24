@@ -297,12 +297,13 @@
                                           :initial-size 2
                                           :max-size 5
                                           :idle-timeout 0
+                                          :max-lifetime nil
                                           :reaper-interval 20)))
       (unwind-protect
            (progn
              ;; Check that reaper thread was not started
              (ok (null (slot-value pool 'dbi-cp.connectionpool::reaper-thread))
-                 "Reaper thread should not be started when idle-timeout=0")
+                 "Reaper thread should not be started when idle-timeout=0 and max-lifetime=nil")
 
              ;; Create and return connections
              (let ((conns (loop for i from 0 below 5
@@ -338,4 +339,185 @@
       ;; Reaper thread should be stopped
       (sleep 0.5) ; Give it time to terminate
       (ok (not (bt:thread-alive-p reaper-thread)) "Reaper thread should be stopped after shutdown"))))
+
+(deftest max-lifetime-recreates-old-connections
+  (testing "Connections exceeding max-lifetime are recreated"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 2
+                                          :max-size 3
+                                          :max-lifetime 3
+                                          :idle-timeout 0
+                                          :reaper-interval 20)))
+      (unwind-protect
+           (progn
+             ;; Get initial connections and their created times
+             (let* ((conn1 (get-connection pool))
+                    (conn2 (get-connection pool))
+                    (pooled-conn1 (find-if (lambda (pc)
+                                            (eq (slot-value pc 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                                conn1))
+                                          (coerce (slot-value pool 'dbi-cp.connectionpool::pool) 'list)))
+                    (pooled-conn2 (find-if (lambda (pc)
+                                            (eq (slot-value pc 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                                conn2))
+                                          (coerce (slot-value pool 'dbi-cp.connectionpool::pool) 'list)))
+                    (created-time1 (slot-value pooled-conn1 'dbi-cp.connectionpool::created-time))
+                    (created-time2 (slot-value pooled-conn2 'dbi-cp.connectionpool::created-time)))
+
+               (ok created-time1 "Connection 1 should have created-time")
+               (ok created-time2 "Connection 2 should have created-time")
+
+               ;; Return connections
+               (disconnect conn1)
+               (disconnect conn2)
+
+               ;; Wait for max-lifetime to expire
+               (sleep 4)
+
+               ;; Get connections again - they should be recreated
+               (let ((new-conn1 (get-connection pool)))
+                 (let* ((new-pooled-conn1 (find-if (lambda (pc)
+                                                     (eq (slot-value pc 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                                         new-conn1))
+                                                   (coerce (slot-value pool 'dbi-cp.connectionpool::pool) 'list)))
+                        (new-created-time1 (slot-value new-pooled-conn1 'dbi-cp.connectionpool::created-time)))
+                   (ok (> new-created-time1 created-time1)
+                       "Connection should be recreated with newer created-time")
+                   (disconnect new-conn1)))))
+        (shutdown pool)))))
+
+(deftest max-lifetime-preserves-young-connections
+  (testing "Connections within max-lifetime are not recreated"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 2
+                                          :max-size 3
+                                          :max-lifetime 10
+                                          :idle-timeout 0
+                                          :reaper-interval 20)))
+      (unwind-protect
+           (progn
+             ;; Get connection and check created time
+             (let* ((conn (get-connection pool))
+                    (pooled-conn (find-if (lambda (pc)
+                                           (eq (slot-value pc 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                               conn))
+                                         (coerce (slot-value pool 'dbi-cp.connectionpool::pool) 'list)))
+                    (created-time (slot-value pooled-conn 'dbi-cp.connectionpool::created-time)))
+
+               (ok created-time "Connection should have created-time")
+
+               ;; Return and immediately get again (within max-lifetime)
+               (disconnect conn)
+               (sleep 1)
+
+               (let ((new-conn (get-connection pool)))
+                 (let* ((new-pooled-conn (find-if (lambda (pc)
+                                                   (eq (slot-value pc 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                                       new-conn))
+                                                 (coerce (slot-value pool 'dbi-cp.connectionpool::pool) 'list)))
+                        (new-created-time (slot-value new-pooled-conn 'dbi-cp.connectionpool::created-time)))
+                   (ok (= new-created-time created-time)
+                       "Connection should not be recreated (same created-time)")
+                   (disconnect new-conn)))))
+        (shutdown pool)))))
+
+(deftest max-lifetime-reaper-recreates-connections
+  (testing "Reaper thread recreates connections exceeding max-lifetime"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 2
+                                          :max-size 3
+                                          :max-lifetime 3
+                                          :idle-timeout 0
+                                          :reaper-interval 2)))
+      (unwind-protect
+           (progn
+             ;; Get all connections and their created times
+             (let* ((conns (loop for i from 0 below 2
+                                collect (get-connection pool)))
+                    (created-times (mapcar (lambda (conn)
+                                            (let ((pc (find-if (lambda (p)
+                                                               (eq (slot-value p 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                                                   conn))
+                                                             (coerce (slot-value pool 'dbi-cp.connectionpool::pool) 'list))))
+                                              (slot-value pc 'dbi-cp.connectionpool::created-time)))
+                                          conns)))
+
+               ;; Return all connections
+               (dolist (conn conns)
+                 (disconnect conn))
+
+               ;; Wait for max-lifetime + reaper-interval
+               (sleep 6)
+
+               ;; Check that connections were recreated by reaper
+               (let* ((new-conns (loop for i from 0 below 2
+                                      collect (get-connection pool)))
+                      (new-created-times (mapcar (lambda (conn)
+                                                  (let ((pc (find-if (lambda (p)
+                                                                    (eq (slot-value p 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                                                        conn))
+                                                                  (coerce (slot-value pool 'dbi-cp.connectionpool::pool) 'list))))
+                                                    (slot-value pc 'dbi-cp.connectionpool::created-time)))
+                                                new-conns)))
+
+                 (ok (every (lambda (pair)
+                             (> (cadr pair) (car pair)))
+                           (mapcar #'list created-times new-created-times))
+                     "All connections should be recreated by reaper")
+
+                 (dolist (conn new-conns)
+                   (disconnect conn)))))
+        (shutdown pool)))))
+
+(deftest max-lifetime-disabled-when-nil
+  (testing "max-lifetime=NIL disables the feature"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 2
+                                          :max-size 3
+                                          :max-lifetime nil
+                                          :idle-timeout 0
+                                          :reaper-interval 20)))
+      (unwind-protect
+           (progn
+             (ok (null (slot-value pool 'dbi-cp.connectionpool::max-lifetime))
+                 "max-lifetime should be NIL")
+
+             ;; Get connection and check created time
+             (let* ((conn (get-connection pool))
+                    (pooled-conn (find-if (lambda (pc)
+                                           (eq (slot-value pc 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                               conn))
+                                         (coerce (slot-value pool 'dbi-cp.connectionpool::pool) 'list)))
+                    (created-time (slot-value pooled-conn 'dbi-cp.connectionpool::created-time)))
+
+               ;; Return and wait
+               (disconnect conn)
+               (sleep 2)
+
+               ;; Get again - should not be recreated
+               (let ((new-conn (get-connection pool)))
+                 (let* ((new-pooled-conn (find-if (lambda (pc)
+                                                   (eq (slot-value pc 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                                       new-conn))
+                                                 (coerce (slot-value pool 'dbi-cp.connectionpool::pool) 'list)))
+                        (new-created-time (slot-value new-pooled-conn 'dbi-cp.connectionpool::created-time)))
+                   (ok (= new-created-time created-time)
+                       "Connection should not be recreated when max-lifetime is NIL")
+                   (disconnect new-conn)))))
+        (shutdown pool)))))
+
+(deftest max-lifetime-default-value
+  (testing "max-lifetime default value is 1800 seconds"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 2
+                                          :max-size 3)))
+      (unwind-protect
+           (ok (= (slot-value pool 'dbi-cp.connectionpool::max-lifetime) 1800)
+               "Default max-lifetime should be 1800 seconds")
+        (shutdown pool)))))
 

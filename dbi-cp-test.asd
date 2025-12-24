@@ -21,6 +21,7 @@
                   ((:file "sqlite3")
                    (:file "mysql")
                    (:file "mysql-max-allowed-packet")
+                   (:file "mysql-max-lifetime")
                    (:file "postgres")))
                  (:module "transaction"
                   :components

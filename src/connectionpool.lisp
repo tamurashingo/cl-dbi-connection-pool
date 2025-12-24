@@ -45,6 +45,11 @@
                  :initform 600
                  :accessor idle-timeout
                  :documentation "Time in seconds after which idle connections are removed from the pool")
+   (max-lifetime :type (or null integer)
+                 :initarg :max-lifetime
+                 :initform 1800
+                 :accessor max-lifetime
+                 :documentation "Maximum lifetime in seconds for a connection since creation. NIL disables this feature")
    (reaper-interval :type integer
                     :initarg :reaper-interval
                     :initform 60
@@ -69,10 +74,14 @@
    (last-used-time :type (or null integer)
                    :initform nil
                    :accessor last-used-time
-                   :documentation "Last time this connection was used (universal-time)")))
+                   :documentation "Last time this connection was used (universal-time)")
+   (created-time :type (or null integer)
+                 :initform nil
+                 :accessor created-time
+                 :documentation "Time when this connection was created (universal-time)")))
 
 @export
-(defun make-dbi-connection-pool (driver-name &rest params &key database-name username password (initial-size 10) (max-size 10) (checkout-timeout 30) (idle-timeout 600) (reaper-interval 60) &allow-other-keys)
+(defun make-dbi-connection-pool (driver-name &rest params &key database-name username password (initial-size 10) (max-size 10) (checkout-timeout 30) (idle-timeout 600) (max-lifetime 1800) (reaper-interval 60) &allow-other-keys)
   "make connection pool
 
 Example
@@ -82,6 +91,7 @@ Example
   (remf params :max-size)
   (remf params :checkout-timeout)
   (remf params :idle-timeout)
+  (remf params :max-lifetime)
   (remf params :reaper-interval)
 
   (let* ((pool (make-array max-size :initial-element NIL))
@@ -92,6 +102,7 @@ Example
                          :checkout-timeout checkout-timeout
                          :initial-size initial-size
                          :idle-timeout idle-timeout
+                         :max-lifetime max-lifetime
                          :reaper-interval reaper-interval
                          :connect-fn (lambda ()
                                        (apply #'dbi:connect driver-name params)))))
@@ -104,8 +115,12 @@ Example
     (when (eq driver-name :mysql)
       (%retrieve-max-allowed-packet! dbi-connection-pool))
 
-    ;; Start reaper thread if idle-timeout is enabled
-    (when (> idle-timeout 0)
+    ;; Retrieve wait_timeout for MySQL and adjust max-lifetime if needed
+    (when (and (eq driver-name :mysql) max-lifetime)
+      (%retrieve-and-adjust-max-lifetime! dbi-connection-pool max-lifetime))
+
+    ;; Start reaper thread if idle-timeout or max-lifetime is enabled
+    (when (or (> idle-timeout 0) max-lifetime)
       (%start-reaper-thread dbi-connection-pool))
 
     dbi-connection-pool))
@@ -134,6 +149,8 @@ Example
         (connect-fn (slot-value dbi-connection-pool 'connect-fn)))
     ;; connected
     (setf (connect-p pooled-connection) T)
+    ;; record creation time
+    (setf (created-time pooled-connection) (get-universal-time))
     ;; make connection
     (let ((dbi-connection (funcall connect-fn)))
       (setf (dbi-connection dbi-proxy) dbi-connection)
@@ -167,14 +184,25 @@ Example
   "get <dbi-connection-proxy> from connection pool"
   (let ((timeout-time (+ (get-internal-real-time)
                          (* (checkout-timeout conn) internal-time-units-per-second)))
-        (sleep-interval 0.1))
+        (sleep-interval 0.1)
+        (max-lifetime (max-lifetime conn))
+        (current-time (get-universal-time)))
     (loop
       ;; Attempt to acquire connection
       (loop for pool across (slot-value conn 'pool)
             if (connect-p pool)
               do (let ((semaphore (semaphore pool)))
                    (when (bt-sem:try-semaphore semaphore)
-                     (return-from get-connection (dbi-connection-proxy pool))))
+                     ;; Check max-lifetime
+                     (if (and max-lifetime
+                              (created-time pool)
+                              (> (- current-time (created-time pool)) max-lifetime))
+                         ;; Connection exceeded max-lifetime, recreate it
+                         (progn
+                           (%recreate-connection! pool conn)
+                           (return-from get-connection (dbi-connection-proxy pool)))
+                         ;; Connection is valid
+                         (return-from get-connection (dbi-connection-proxy pool)))))
             else
               do (let ((semaphore (semaphore pool)))
                    (when (bt-sem:try-semaphore semaphore)
@@ -206,6 +234,32 @@ Example
     (error (e)
       (warn "Failed to retrieve max_allowed_packet: ~A" e))))
 
+(defun %retrieve-and-adjust-max-lifetime! (dbi-connection-pool specified-max-lifetime)
+  "Retrieve wait_timeout from MySQL server and adjust max-lifetime if needed"
+  (handler-case
+      (let ((proxy (get-connection dbi-connection-pool)))
+        (unwind-protect
+             (let* ((dbi-connection (dbi-connection proxy))
+                    (query (dbi:prepare dbi-connection
+                                        "SHOW VARIABLES LIKE 'wait_timeout'"))
+                    (result (dbi:execute query))
+                    (row (dbi:fetch result)))
+               (when row
+                 (let* ((wait-timeout (parse-integer (getf row :|Value|)))
+                        ;; Recommended: wait_timeout - 60 seconds
+                        (recommended-max-lifetime (max 60 (- wait-timeout 60))))
+                   (when (> specified-max-lifetime wait-timeout)
+                     (warn "max-lifetime (~A seconds) is greater than MySQL wait_timeout (~A seconds). Using ~A seconds (wait_timeout - 60) instead."
+                           specified-max-lifetime wait-timeout recommended-max-lifetime)
+                     (setf (max-lifetime dbi-connection-pool) recommended-max-lifetime))
+                   (when (and (> specified-max-lifetime recommended-max-lifetime)
+                              (<= specified-max-lifetime wait-timeout))
+                     (warn "max-lifetime (~A seconds) is close to MySQL wait_timeout (~A seconds). Consider using ~A seconds (wait_timeout - 60) or less."
+                           specified-max-lifetime wait-timeout recommended-max-lifetime)))))
+          (disconnect proxy)))
+    (error (e)
+      (warn "Failed to retrieve wait_timeout: ~A" e))))
+
 (defun %start-reaper-thread (dbi-connection-pool)
   "Start background thread to reap idle connections"
   (setf (reaper-thread dbi-connection-pool)
@@ -228,6 +282,7 @@ Example
   "Remove idle connections exceeding idle-timeout"
   (let* ((pool (slot-value dbi-connection-pool 'pool))
          (idle-timeout (idle-timeout dbi-connection-pool))
+         (max-lifetime (max-lifetime dbi-connection-pool))
          (initial-size (initial-size dbi-connection-pool))
          (current-time (get-universal-time))
          (active-count 0))
@@ -236,6 +291,15 @@ Example
     (loop for pc across pool
           when (connect-p pc)
             do (incf active-count))
+
+    ;; Check max-lifetime and recreate connections
+    (when max-lifetime
+      (loop for pc across pool
+            when (and (connect-p pc)
+                      (created-time pc)
+                      (> (- current-time (created-time pc)) max-lifetime))
+              do (when (bt-sem:try-semaphore (semaphore pc))
+                   (%recreate-connection! pc dbi-connection-pool))))
 
     ;; Remove idle connections (but keep initial-size)
     (loop for pc across pool
@@ -258,4 +322,28 @@ Example
           (warn "Error disconnecting pooled connection: ~A" e))))
     (setf (connect-p pooled-connection) nil)
     (setf (last-used-time pooled-connection) nil)
+    (setf (created-time pooled-connection) nil)
+    (bt-sem:signal-semaphore (semaphore pooled-connection))))
+
+(defun %recreate-connection! (pooled-connection dbi-connection-pool)
+  "Recreate a connection that exceeded max-lifetime"
+  (let* ((dbi-proxy (dbi-connection-proxy pooled-connection))
+         (dbi-connection (dbi-connection dbi-proxy)))
+    ;; Disconnect old connection
+    (when dbi-connection
+      (handler-case
+          (dbi:disconnect dbi-connection)
+        (error (e)
+          (warn "Error disconnecting old connection: ~A" e))))
+    ;; Create new connection
+    (let ((connect-fn (slot-value dbi-connection-pool 'connect-fn)))
+      (setf (created-time pooled-connection) (get-universal-time))
+      (setf (last-used-time pooled-connection) nil)
+      (let ((new-dbi-connection (funcall connect-fn)))
+        (setf (dbi-connection dbi-proxy) new-dbi-connection)
+        ;; Save initial auto-commit value
+        (setf (slot-value dbi-proxy 'dbi-cp.proxy::initial-auto-commit)
+              (slot-value new-dbi-connection 'dbi.driver::auto-commit))
+        ;; Register proxy for connection
+        (dbi-cp.proxy::register-connection-proxy new-dbi-connection dbi-proxy)))
     (bt-sem:signal-semaphore (semaphore pooled-connection))))
