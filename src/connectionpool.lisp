@@ -50,6 +50,16 @@
                  :initform 1800
                  :accessor max-lifetime
                  :documentation "Maximum lifetime in seconds for a connection since creation. NIL disables this feature")
+   (keepalive-interval :type integer
+                       :initarg :keepalive-interval
+                       :initform 0
+                       :accessor keepalive-interval
+                       :documentation "Interval in seconds for checking connection validity. 0 disables keepalive checks")
+   (validation-query :type (or null string)
+                     :initarg :validation-query
+                     :initform nil
+                     :accessor validation-query
+                     :documentation "Query used to validate connection (e.g., 'SELECT 1'). Required for keepalive to work")
    (reaper-interval :type integer
                     :initarg :reaper-interval
                     :initform 60
@@ -78,10 +88,14 @@
    (created-time :type (or null integer)
                  :initform nil
                  :accessor created-time
-                 :documentation "Time when this connection was created (universal-time)")))
+                 :documentation "Time when this connection was created (universal-time)")
+   (last-keepalive-time :type (or null integer)
+                        :initform nil
+                        :accessor last-keepalive-time
+                        :documentation "Last time keepalive check was performed (universal-time)")))
 
 @export
-(defun make-dbi-connection-pool (driver-name &rest params &key database-name username password (initial-size 10) (max-size 10) (checkout-timeout 30) (idle-timeout 600) (max-lifetime 1800) (reaper-interval 60) &allow-other-keys)
+(defun make-dbi-connection-pool (driver-name &rest params &key database-name username password (initial-size 10) (max-size 10) (checkout-timeout 30) (idle-timeout 600) (max-lifetime 1800) (keepalive-interval 0) validation-query (reaper-interval 60) &allow-other-keys)
   "make connection pool
 
 Example
@@ -92,6 +106,8 @@ Example
   (remf params :checkout-timeout)
   (remf params :idle-timeout)
   (remf params :max-lifetime)
+  (remf params :keepalive-interval)
+  (remf params :validation-query)
   (remf params :reaper-interval)
 
   (let* ((pool (make-array max-size :initial-element NIL))
@@ -103,6 +119,8 @@ Example
                          :initial-size initial-size
                          :idle-timeout idle-timeout
                          :max-lifetime max-lifetime
+                         :keepalive-interval keepalive-interval
+                         :validation-query validation-query
                          :reaper-interval reaper-interval
                          :connect-fn (lambda ()
                                        (apply #'dbi:connect driver-name params)))))
@@ -119,8 +137,13 @@ Example
     (when (and (eq driver-name :mysql) max-lifetime)
       (%retrieve-and-adjust-max-lifetime! dbi-connection-pool max-lifetime))
 
-    ;; Start reaper thread if idle-timeout or max-lifetime is enabled
-    (when (or (> idle-timeout 0) max-lifetime)
+    ;; Warn if keepalive-interval is set but validation-query is not provided
+    (when (and (> keepalive-interval 0) (not validation-query))
+      (warn "keepalive-interval (~A seconds) is set but validation-query is not provided. Keepalive checks will not be performed. Please set :validation-query to enable keepalive."
+            keepalive-interval))
+
+    ;; Start reaper thread if idle-timeout, max-lifetime, or keepalive-interval is enabled
+    (when (or (> idle-timeout 0) max-lifetime (and (> keepalive-interval 0) validation-query))
       (%start-reaper-thread dbi-connection-pool))
 
     dbi-connection-pool))
@@ -279,10 +302,12 @@ Example
           (warn "Reaper thread error: ~A" e))))))
 
 (defun %reap-idle-connections (dbi-connection-pool)
-  "Remove idle connections exceeding idle-timeout"
+  "Remove idle connections exceeding idle-timeout and perform keepalive checks"
   (let* ((pool (slot-value dbi-connection-pool 'pool))
          (idle-timeout (idle-timeout dbi-connection-pool))
          (max-lifetime (max-lifetime dbi-connection-pool))
+         (keepalive-interval (keepalive-interval dbi-connection-pool))
+         (validation-query (validation-query dbi-connection-pool))
          (initial-size (initial-size dbi-connection-pool))
          (current-time (get-universal-time))
          (active-count 0))
@@ -291,6 +316,25 @@ Example
     (loop for pc across pool
           when (connect-p pc)
             do (incf active-count))
+
+    ;; Perform keepalive checks on idle connections
+    (when (and (> keepalive-interval 0) validation-query)
+      (loop for pc across pool
+            when (and (connect-p pc)
+                      (or (null (last-keepalive-time pc))
+                          (> (- current-time (last-keepalive-time pc)) keepalive-interval)))
+              do (when (bt-sem:try-semaphore (semaphore pc))
+                   (unwind-protect
+                        (progn
+                          (if (%validate-connection pc dbi-connection-pool)
+                              ;; Connection is valid, update keepalive time
+                              (setf (last-keepalive-time pc) current-time)
+                              ;; Connection is invalid, recreate it
+                              (progn
+                                (warn "Connection validation failed, recreating connection")
+                                (%recreate-connection! pc dbi-connection-pool)
+                                (setf (last-keepalive-time pc) current-time))))
+                     (bt-sem:signal-semaphore (semaphore pc))))))
 
     ;; Check max-lifetime and recreate connections
     (when max-lifetime
@@ -323,10 +367,26 @@ Example
     (setf (connect-p pooled-connection) nil)
     (setf (last-used-time pooled-connection) nil)
     (setf (created-time pooled-connection) nil)
+    (setf (last-keepalive-time pooled-connection) nil)
     (bt-sem:signal-semaphore (semaphore pooled-connection))))
 
+(defun %validate-connection (pooled-connection dbi-connection-pool)
+  "Validate connection using validation-query"
+  (handler-case
+      (let* ((dbi-proxy (dbi-connection-proxy pooled-connection))
+             (dbi-conn (dbi-connection dbi-proxy))
+             (query-str (validation-query dbi-connection-pool)))
+        (when (and dbi-conn query-str)
+          (let ((query (dbi:prepare dbi-conn query-str)))
+            (dbi:execute query)
+            (dbi:fetch query))
+          t))
+    (error (e)
+      (warn "Connection validation failed: ~A" e)
+      nil)))
+
 (defun %recreate-connection! (pooled-connection dbi-connection-pool)
-  "Recreate a connection that exceeded max-lifetime"
+  "Recreate a connection that exceeded max-lifetime or failed validation"
   (let* ((dbi-proxy (dbi-connection-proxy pooled-connection))
          (dbi-connection (dbi-connection dbi-proxy)))
     ;; Disconnect old connection
@@ -339,6 +399,7 @@ Example
     (let ((connect-fn (slot-value dbi-connection-pool 'connect-fn)))
       (setf (created-time pooled-connection) (get-universal-time))
       (setf (last-used-time pooled-connection) nil)
+      (setf (last-keepalive-time pooled-connection) nil)
       (let ((new-dbi-connection (funcall connect-fn)))
         (setf (dbi-connection dbi-proxy) new-dbi-connection)
         ;; Save initial auto-commit value

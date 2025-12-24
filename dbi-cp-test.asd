@@ -22,6 +22,7 @@
                    (:file "mysql")
                    (:file "mysql-max-allowed-packet")
                    (:file "mysql-max-lifetime")
+                   (:file "mysql-keepalive")
                    (:file "postgres")))
                  (:module "transaction"
                   :components
