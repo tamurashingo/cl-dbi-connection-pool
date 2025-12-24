@@ -12,7 +12,7 @@ This library provides connection pool for CL-DBI.
 make connection pool.
 
 ```common-lisp
-(dbi-cp:make-db-connection-pool driver-name &key database-name username password (initial-size 10) (max-size 10)) ;; => dbi-cp:<dbi-connection-pool>
+(dbi-cp:make-db-connection-pool driver-name &key database-name username password (initial-size 10) (max-size 10) (checkout-timeout 30) (idle-timeout 600) (max-lifetime 1800) (keepalive-interval 0) validation-query (reaper-interval 60)) ;; => dbi-cp:<dbi-connection-pool>
 ```
 
 - driver-name
@@ -27,14 +27,44 @@ make connection pool.
     - initial number of connections that are created when the pool is started
 - max-size
     - maximum number of connections
+- checkout-timeout
+    - maximum wait time (in seconds) when acquiring a connection from the pool (default: 30 seconds)
+- idle-timeout
+    - time in seconds after which idle connections are removed from the pool (default: 600 seconds)
+- max-lifetime
+    - maximum lifetime in seconds for a connection since creation (default: 1800 seconds, NIL to disable)
+- keepalive-interval
+    - interval in seconds for checking connection validity (default: 0 to disable, recommended: 600 seconds)
+- validation-query
+    - query used to validate connection (e.g., "SELECT 1") (default: automatically set based on database type)
+- reaper-interval
+    - interval in seconds between reaper thread executions (default: 60 seconds, usually no need to change)
 
 
  Additionally, it accepts parameters used in cl-dbi.
 
 
 ```common-lisp
+;;; Basic usage example
 (defparameter *CONNECTION-POOL*
-  (dbi-cp:make-dbi-connection-pool :mysql :database-name "dbi-cp" :username "root" :password "password"))
+  (dbi-cp:make-dbi-connection-pool :mysql 
+                                   :database-name "dbi-cp" 
+                                   :username "root" 
+                                   :password "password"))
+
+;;; Advanced connection pool configuration example
+(defparameter *POOL-WITH-OPTIONS*
+  (dbi-cp:make-dbi-connection-pool :mysql
+                                   :database-name "production"
+                                   :username "app_user"
+                                   :password "password"
+                                   :initial-size 5
+                                   :max-size 20
+                                   :checkout-timeout 30        ; wait up to 30 seconds
+                                   :idle-timeout 600           ; remove idle connections after 10 minutes
+                                   :max-lifetime 1800          ; recreate connections after 30 minutes
+                                   :keepalive-interval 600     ; check validity every 10 minutes
+                                   :validation-query "SELECT 1")) ; validation query
 ```
 
 ### Get connection
@@ -141,6 +171,28 @@ do preparation and execution at once for INSERT, UPDATE, DELETE or DDL.
 
 this function is based on `CL-DBI`
 
+### Release connection
+
+Return the connection to the pool. The connection is not closed but returned to the pool for reuse.
+
+```common-lisp
+(dbi-cp:disconnect connection)
+```
+
+- connection (dbi-cp.proxy:&lt;dbi-connection-proxy&gt;)
+    - database connection
+
+### Shutdown connection pool
+
+Close all connections and stop the connection pool. Also stops the background reaper thread.
+
+```common-lisp
+(dbi-cp:shutdown pool)
+```
+
+- pool (dbi-cp:&lt;dbi-connection-pool&gt;)
+    - connection pool
+
 
 ### Transaction
 
@@ -234,6 +286,238 @@ remove the named savepoint. no commit or rollback occurs.
     - name of transaction savepoint
 
 this function is based on `CL-DBI`
+
+
+## Advanced Connection Pool Features
+
+For production use, the following advanced connection management features are provided.
+
+### checkout-timeout (Connection Acquisition Timeout)
+
+Set the wait time when acquiring a connection from the pool.
+
+- **Default**: 30 seconds
+- **Effect**: If all connections are in use, wait for the specified time and retry
+- **Purpose**: Prevent errors during temporary high load
+
+```common-lisp
+(dbi-cp:make-dbi-connection-pool :mysql
+  :database-name "test"
+  :username "root"
+  :password "password"
+  :checkout-timeout 30)  ; wait up to 30 seconds
+```
+
+### idle-timeout (Idle Timeout)
+
+Automatically remove unused connections from the pool.
+
+- **Default**: 600 seconds (10 minutes)
+- **Effect**: Remove connections that have not been used for the specified time, shrink to `:initial-size`
+- **Purpose**: Resource efficiency during low load
+
+```common-lisp
+(dbi-cp:make-dbi-connection-pool :mysql
+  :database-name "test"
+  :username "root"
+  :password "password"
+  :initial-size 5
+  :max-size 20
+  :idle-timeout 600)  ; remove after 10 minutes of inactivity
+```
+
+### max-lifetime (Maximum Lifetime)
+
+Manage the elapsed time since connection creation and automatically recreate old connections.
+
+- **Default**: 1800 seconds (30 minutes)
+- **Effect**: Recreate connections after the specified time has elapsed
+- **Purpose**: Handle database-side timeouts, improve stability of long-running applications
+
+```common-lisp
+(dbi-cp:make-dbi-connection-pool :mysql
+  :database-name "test"
+  :username "root"
+  :password "password"
+  :max-lifetime 1800)  ; recreate after 30 minutes
+
+;; If MySQL wait_timeout is 8 hours
+(dbi-cp:make-dbi-connection-pool :mysql
+  :database-name "test"
+  :username "root"
+  :password "password"
+  :max-lifetime 28740)  ; 8 hours - 60 seconds
+```
+
+**Recommended setting**: Set slightly shorter than the database's `wait_timeout`
+
+### keepalive-interval (Keepalive Interval)
+
+Periodically check connection validity and detect/recreate invalid connections.
+
+- **Default**: 0 (disabled)
+- **Recommended**: 600 seconds (10 minutes)
+- **Effect**: Check connection validity at specified intervals and recreate if invalid
+- **Purpose**: Detect silent disconnections, detect database-side timeouts
+
+```common-lisp
+(dbi-cp:make-dbi-connection-pool :mysql
+  :database-name "test"
+  :username "root"
+  :password "password"
+  :keepalive-interval 600     ; check every 10 minutes
+  :validation-query "SELECT 1")
+```
+
+**Note**: `validation-query` must be set to enable `keepalive-interval`.
+
+### validation-query (Validation Query)
+
+Set the SQL query to check connection validity.
+
+- **Default**: Automatically set based on database type (MySQL/PostgreSQL/SQLite3: "SELECT 1")
+- **Effect**: Execute this query during keepalive checks to validate the connection
+- **Purpose**: Validate connection validity, use with keepalive
+
+```common-lisp
+;; Use default value (recommended)
+(dbi-cp:make-dbi-connection-pool :mysql
+  :database-name "test"
+  :username "root"
+  :password "password")
+
+;; Specify custom query
+(dbi-cp:make-dbi-connection-pool :postgres
+  :database-name "test"
+  :username "postgres"
+  :password "password"
+  :validation-query "SELECT 1")
+
+;; Application-specific validation
+(dbi-cp:make-dbi-connection-pool :postgres
+  :database-name "myapp"
+  :username "appuser"
+  :password "password"
+  :validation-query "SELECT 1 FROM users LIMIT 1")
+```
+
+**Best practices**: 
+- Use lightweight queries (`SELECT 1` recommended)
+- Use queries without side effects (no INSERT/UPDATE/DELETE)
+- Use queries that execute quickly
+
+### reaper-interval (Reaper Thread Execution Interval)
+
+Set the execution interval of the reaper thread that runs in the background.
+
+- **Default**: 60 seconds
+- **Effect**: Control the reaper thread execution interval
+- **Purpose**: Usually no need to change, for advanced tuning
+
+The reaper thread is responsible for:
+1. Removing idle connections based on `idle-timeout`
+2. Recreating old connections based on `max-lifetime`
+3. Checking connection validity based on `keepalive-interval`
+
+```common-lisp
+(dbi-cp:make-dbi-connection-pool :mysql
+  :database-name "test"
+  :username "root"
+  :password "password"
+  :reaper-interval 60)  ; execute every 60 seconds (default)
+```
+
+**Note**: 
+- Setting this value too small consumes system resources
+- Setting it too large delays the response of idle-timeout and max-lifetime
+- The default value (60 seconds) is usually sufficient
+
+### MySQL-Specific Features
+
+When using the MySQL driver, the following automatic adjustment features are enabled:
+
+#### Automatic Retrieval of max_allowed_packet
+
+Automatically retrieve the MySQL server's `max_allowed_packet` setting, which can be referenced when executing large queries.
+
+#### Automatic Adjustment of max-lifetime Based on wait_timeout
+
+Automatically retrieve the MySQL server's `wait_timeout` setting and check if `max-lifetime` is appropriately configured. If `max-lifetime` is longer than `wait_timeout`, a warning is displayed.
+
+```common-lisp
+;; If MySQL wait_timeout is 28800 seconds (8 hours)
+;; It is recommended to set max-lifetime shorter than wait_timeout
+(dbi-cp:make-dbi-connection-pool :mysql
+  :database-name "test"
+  :username "root"
+  :password "password"
+  :max-lifetime 28740)  ; 8 hours - 60 seconds
+```
+
+This feature allows the application to automatically recreate connections before they timeout on the database side.
+
+### Recommended Configuration
+
+Recommended configuration for production environments:
+
+```common-lisp
+(dbi-cp:make-dbi-connection-pool :mysql
+  :database-name "production"
+  :username "app_user"
+  :password "password"
+  :initial-size 5              ; minimum number of connections
+  :max-size 20                 ; maximum number of connections
+  :checkout-timeout 30         ; wait 30 seconds
+  :idle-timeout 600            ; remove idle connections after 10 minutes
+  :max-lifetime 1800           ; recreate connections after 30 minutes
+  :keepalive-interval 600      ; check validity every 10 minutes
+  :validation-query "SELECT 1") ; validation query
+```
+
+### Compatibility with Other Frameworks
+
+These parameters are compatible with standard parameters from the following frameworks:
+
+- **Spring Boot (HikariCP)**: `connection-timeout`, `idle-timeout`, `max-lifetime`, `keepalive-time`, `connection-test-query`
+- **Rails (ActiveRecord)**: `checkout_timeout`, `idle_timeout`, `keepalive`
+
+### Important Notes
+
+#### Relationship between keepalive-interval and validation-query
+
+When enabling `keepalive-interval` (setting a value greater than 0), **you must set `validation-query`**. If `validation-query` is not set, keepalive checks will not be executed and a warning message will be displayed.
+
+```common-lisp
+;; ❌ Incorrect example: only setting keepalive-interval
+(dbi-cp:make-dbi-connection-pool :mysql
+  :database-name "test"
+  :username "root"
+  :password "password"
+  :keepalive-interval 600)  ; warning will be displayed
+
+;; ✓ Correct example: also setting validation-query
+(dbi-cp:make-dbi-connection-pool :mysql
+  :database-name "test"
+  :username "root"
+  :password "password"
+  :keepalive-interval 600
+  :validation-query "SELECT 1")  ; works correctly
+```
+
+#### Recommended Parameter Settings
+
+The following relationships exist between parameters:
+
+1. **keepalive-interval < max-lifetime** is recommended
+   - Periodically check with keepalive, finally reset with max-lifetime
+   - Example: `keepalive-interval=600`, `max-lifetime=1800`
+
+2. **max-lifetime < database wait_timeout** is recommended
+   - Recreate on the application side before timing out on the database side
+   - Example (when MySQL wait_timeout=28800): `max-lifetime=28740`
+
+3. **reaper-interval usually uses the default value**
+   - 60 seconds is sufficient unless there is a special reason
 
 
 ## Example
