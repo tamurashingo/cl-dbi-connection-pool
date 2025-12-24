@@ -521,3 +521,161 @@
                "Default max-lifetime should be 1800 seconds")
         (shutdown pool)))))
 
+(deftest keepalive-interval-default-value
+  (testing "keepalive-interval default value is 0 (disabled)"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 2
+                                          :max-size 3)))
+      (unwind-protect
+           (ok (= (slot-value pool 'dbi-cp.connectionpool::keepalive-interval) 0)
+               "Default keepalive-interval should be 0 (disabled)")
+        (shutdown pool)))))
+
+(deftest keepalive-interval-validates-connections
+  (testing "Keepalive validates connections periodically"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 2
+                                          :max-size 3
+                                          :keepalive-interval 3
+                                          :validation-query "SELECT 1"
+                                          :reaper-interval 2
+                                          :idle-timeout 0
+                                          :max-lifetime nil)))
+      (unwind-protect
+           (progn
+             ;; Get connections
+             (let* ((conn1 (get-connection pool))
+                    (conn2 (get-connection pool))
+                    (pc1 (find-if (lambda (pc)
+                                   (eq (slot-value pc 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                       conn1))
+                                 (coerce (slot-value pool 'dbi-cp.connectionpool::pool) 'list)))
+                    (pc2 (find-if (lambda (pc)
+                                   (eq (slot-value pc 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                       conn2))
+                                 (coerce (slot-value pool 'dbi-cp.connectionpool::pool) 'list))))
+
+               (ok (null (slot-value pc1 'dbi-cp.connectionpool::last-keepalive-time))
+                   "Initial keepalive time should be nil")
+               (ok (null (slot-value pc2 'dbi-cp.connectionpool::last-keepalive-time))
+                   "Initial keepalive time should be nil")
+
+               ;; Return connections
+               (disconnect conn1)
+               (disconnect conn2)
+
+               ;; Wait for keepalive check
+               (sleep 6)
+
+               ;; Keepalive should have been performed
+               (ok (slot-value pc1 'dbi-cp.connectionpool::last-keepalive-time)
+                   "Keepalive time should be set after check")
+               (ok (slot-value pc2 'dbi-cp.connectionpool::last-keepalive-time)
+                   "Keepalive time should be set after check")))
+        (shutdown pool)))))
+
+(deftest keepalive-interval-disabled-without-validation-query
+  (testing "Keepalive is disabled when validation-query is not provided"
+    (let* ((warning-output (make-string-output-stream))
+           (*error-output* warning-output)
+           (pool (make-dbi-connection-pool :sqlite3
+                                           :database-name ":memory:"
+                                           :initial-size 2
+                                           :max-size 3
+                                           :keepalive-interval 3
+                                           :reaper-interval 2
+                                           :idle-timeout 0
+                                           :max-lifetime nil)))
+      (unwind-protect
+           (progn
+             ;; Check that warning was issued
+             (let ((warning-text (get-output-stream-string warning-output)))
+               (ok (search "keepalive-interval" warning-text)
+                   "Should warn when keepalive-interval is set without validation-query"))
+
+             ;; Get and return connection
+             (let* ((conn (get-connection pool))
+                    (pc (find-if (lambda (p)
+                                  (eq (slot-value p 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                      conn))
+                                (coerce (slot-value pool 'dbi-cp.connectionpool::pool) 'list))))
+               (disconnect conn)
+
+               ;; Wait for potential keepalive check
+               (sleep 6)
+
+               ;; Keepalive should not have been performed (no validation-query)
+               (ok (null (slot-value pc 'dbi-cp.connectionpool::last-keepalive-time))
+                   "Keepalive should not run without validation-query")))
+        (shutdown pool)))))
+
+(deftest keepalive-interval-disabled-when-zero
+  (testing "keepalive-interval=0 disables keepalive checks"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 2
+                                          :max-size 3
+                                          :keepalive-interval 0
+                                          :validation-query "SELECT 1"
+                                          :reaper-interval 2
+                                          :idle-timeout 0
+                                          :max-lifetime nil)))
+      (unwind-protect
+           (progn
+             ;; Get and return connection
+             (let* ((conn (get-connection pool))
+                    (pc (find-if (lambda (p)
+                                  (eq (slot-value p 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                      conn))
+                                (coerce (slot-value pool 'dbi-cp.connectionpool::pool) 'list))))
+               (disconnect conn)
+
+               ;; Wait
+               (sleep 6)
+
+               ;; Keepalive should not have been performed
+               (ok (null (slot-value pc 'dbi-cp.connectionpool::last-keepalive-time))
+                   "Keepalive should not run when keepalive-interval=0")))
+        (shutdown pool)))))
+
+(deftest keepalive-interval-skips-connections-in-use
+  (testing "Keepalive skips connections that are in use"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 2
+                                          :max-size 3
+                                          :keepalive-interval 3
+                                          :validation-query "SELECT 1"
+                                          :reaper-interval 2
+                                          :idle-timeout 0
+                                          :max-lifetime nil)))
+      (unwind-protect
+           (progn
+             ;; Get connections and keep them in use
+             (let* ((conn1 (get-connection pool))
+                    (conn2 (get-connection pool))
+                    (pc1 (find-if (lambda (pc)
+                                   (eq (slot-value pc 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                       conn1))
+                                 (coerce (slot-value pool 'dbi-cp.connectionpool::pool) 'list)))
+                    (pc2 (find-if (lambda (pc)
+                                   (eq (slot-value pc 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                       conn2))
+                                 (coerce (slot-value pool 'dbi-cp.connectionpool::pool) 'list))))
+
+               ;; Wait for potential keepalive check (connections are in use)
+               (sleep 6)
+
+               ;; Keepalive should not have been performed on in-use connections
+               (ok (null (slot-value pc1 'dbi-cp.connectionpool::last-keepalive-time))
+                   "Keepalive should skip in-use connections")
+               (ok (null (slot-value pc2 'dbi-cp.connectionpool::last-keepalive-time))
+                   "Keepalive should skip in-use connections")
+
+               ;; Return connections
+               (disconnect conn1)
+               (disconnect conn2)))
+        (shutdown pool)))))
+
