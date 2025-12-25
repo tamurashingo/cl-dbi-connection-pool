@@ -15,7 +15,7 @@
 (in-package :dbi-cp-asd)
 
 (defsystem dbi-cp
-  :version "0.1"
+  :version "0.2.0"
   :author "tamura shingo"
   :license "LLGPL"
   :depends-on (:cl-syntax
