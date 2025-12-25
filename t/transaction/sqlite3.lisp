@@ -26,7 +26,7 @@
       (begin-transaction conn)
       (do-sql conn "INSERT INTO users (id, name) VALUES (1, 'Alice')")
       (disconnect conn))
-    
+
     ;; Next user: Should get clean connection
     (let ((conn (get-connection *connection-pool*)))
       (let* ((query (prepare conn "SELECT * FROM users WHERE id = 1"))
@@ -42,13 +42,13 @@
       (do-sql conn "DROP TABLE IF EXISTS users")
       (do-sql conn "CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR(255))")
       (disconnect conn))
-    
+
     ;; First user: begin-transaction + INSERT but no commit
     (let ((conn (get-connection *connection-pool*)))
       (begin-transaction conn)
       (do-sql conn "INSERT INTO users (id, name) VALUES (2, 'Bob')")
       (disconnect conn))
-    
+
     ;; Next user: Should get clean connection
     (let ((conn (get-connection *connection-pool*)))
       (let* ((query (prepare conn "SELECT * FROM users WHERE id = 2"))
@@ -64,14 +64,14 @@
       (do-sql conn "DROP TABLE IF EXISTS users")
       (do-sql conn "CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR(255))")
       (disconnect conn))
-    
+
     ;; First user: begin-transaction + INSERT + commit (but commit does nothing)
     (let ((conn (get-connection *connection-pool*)))
       (begin-transaction conn)
       (do-sql conn "INSERT INTO users (id, name) VALUES (3, 'Charlie')")
       (commit conn)  ;; This does nothing because *transaction-state* is nil
       (disconnect conn))
-    
+
     ;; Next user: Should get clean connection
     (let ((conn (get-connection *connection-pool*)))
       (let* ((query (prepare conn "SELECT * FROM users WHERE id = 3"))
@@ -87,14 +87,14 @@
       (do-sql conn "DROP TABLE IF EXISTS users")
       (do-sql conn "CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR(255))")
       (disconnect conn))
-    
+
     ;; First user: begin-transaction + INSERT + rollback (but rollback does nothing)
     (let ((conn (get-connection *connection-pool*)))
       (begin-transaction conn)
       (do-sql conn "INSERT INTO users (id, name) VALUES (4, 'Dave')")
       (rollback conn)  ;; This does nothing because *transaction-state* is nil
       (disconnect conn))
-    
+
     ;; Next user: Should get clean connection
     (let ((conn (get-connection *connection-pool*)))
       (let* ((query (prepare conn "SELECT * FROM users WHERE id = 4"))
@@ -111,7 +111,7 @@
       (do-sql conn "DROP TABLE IF EXISTS users2")
       (do-sql conn "CREATE TABLE users2 (id INTEGER PRIMARY KEY, name VARCHAR(255))")
       (disconnect conn))
-    
+
     ;; SQLite3 raises "cannot start a transaction within a transaction" error
     ;; when with-transaction is called after begin-transaction.
     ;; This is expected behavior for SQLite3.
@@ -135,14 +135,14 @@
       (do-sql conn "DROP TABLE IF EXISTS users3")
       (do-sql conn "CREATE TABLE users3 (id INTEGER PRIMARY KEY, name VARCHAR(255))")
       (disconnect conn))
-    
+
     ;; SQLite3 raises "cannot start a transaction within a transaction" error
     ;; when with-transaction is called after begin-transaction.
     ;; This is expected behavior for SQLite3.
     ;; We verify that the error is properly raised and handled.
     (handler-case
         (let ((conn (get-connection *connection-pool*)))
-          (unwind-protect 
+          (unwind-protect
             (progn
               (begin-transaction conn)
               (do-sql conn "INSERT INTO users3 (id, name) VALUES (6, 'Frank')")
@@ -155,22 +155,32 @@
 
 (deftest sqlite3-issue11-auto-commit-restoration
   (testing "auto-commit flag should be restored after disconnect"
-    (let ((conn (get-connection *connection-pool*)))
-      (do-sql conn "DROP TABLE IF EXISTS users4")
-      (do-sql conn "CREATE TABLE users4 (id INTEGER PRIMARY KEY, name VARCHAR(255))")
-      (disconnect conn))
-    
-    ;; First user: begin-transaction changes auto-commit to nil
-    (let ((conn (get-connection *connection-pool*)))
-      (begin-transaction conn)
-      ;; auto-commit is now nil
-      (disconnect conn))
-    
-    ;; Next user: auto-commit should be restored to initial value
-    (let ((conn (get-connection *connection-pool*)))
-      (let ((dbi-conn (slot-value conn 'dbi-cp.proxy::dbi-connection))
-            (initial-auto-commit (slot-value conn 'dbi-cp.proxy::initial-auto-commit)))
-        ;; auto-commit should match initial-auto-commit
-        (ok (eq (slot-value dbi-conn 'dbi.driver::auto-commit)
-                initial-auto-commit)))
-      (disconnect conn))))
+    ;; Use a separate connection pool with its own database file to avoid lock conflicts
+    (let ((isolated-pool (make-dbi-connection-pool :sqlite3
+                                                   :database-name "/volumes/sqlite3-test-auto-commit-isolated.db"
+                                                   :initial-size 2
+                                                   :max-size 3)))
+      (unwind-protect
+           (progn
+             ;; Set up table once
+             (let ((conn (get-connection isolated-pool)))
+               (do-sql conn "DROP TABLE IF EXISTS users_test")
+               (do-sql conn "CREATE TABLE users_test (id INTEGER PRIMARY KEY, name VARCHAR(255))")
+               (disconnect conn))
+
+             ;; First user: begin-transaction changes auto-commit to nil
+             (let ((conn (get-connection isolated-pool)))
+               (begin-transaction conn)
+               ;; auto-commit is now nil
+               (disconnect conn))
+
+             ;; Next user: auto-commit should be restored to initial value
+             (let ((conn (get-connection isolated-pool)))
+               (let ((dbi-conn (slot-value conn 'dbi-cp.proxy::dbi-connection))
+                     (initial-auto-commit (slot-value conn 'dbi-cp.proxy::initial-auto-commit)))
+                 ;; auto-commit should match initial-auto-commit
+                 (ok (eq (slot-value dbi-conn 'dbi.driver::auto-commit)
+                         initial-auto-commit)))
+               (disconnect conn)))
+        ;; Cleanup: shutdown the isolated pool
+        (shutdown isolated-pool)))))

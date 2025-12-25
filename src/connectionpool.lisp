@@ -68,7 +68,11 @@
    (reaper-thread :type (or null bt:thread)
                   :initform nil
                   :accessor reaper-thread
-                  :documentation "Background thread that removes idle connections")))
+                  :documentation "Background thread that removes idle connections")
+   (next-index :type integer
+               :initform 0
+               :accessor next-index
+               :documentation "Next starting index for round-robin connection selection")))
 
 (defclass <pooled-connection> ()
   ((connect-p :type boolean
@@ -204,34 +208,42 @@ Example
 
 @export
 (defmethod get-connection ((conn <dbi-connection-pool>))
-  "get <dbi-connection-proxy> from connection pool"
+  "get <dbi-connection-proxy> from connection pool using round-robin"
   (let ((timeout-time (+ (get-internal-real-time)
                          (* (checkout-timeout conn) internal-time-units-per-second)))
         (sleep-interval 0.1)
         (max-lifetime (max-lifetime conn))
-        (current-time (get-universal-time)))
+        (current-time (get-universal-time))
+        (pool (slot-value conn 'pool))
+        (pool-size (length (slot-value conn 'pool))))
     (loop
-      ;; Attempt to acquire connection
-      (loop for pool across (slot-value conn 'pool)
-            if (connect-p pool)
-              do (let ((semaphore (semaphore pool)))
-                   (when (bt-sem:try-semaphore semaphore)
-                     ;; Check max-lifetime
-                     (if (and max-lifetime
-                              (created-time pool)
-                              (> (- current-time (created-time pool)) max-lifetime))
-                         ;; Connection exceeded max-lifetime, recreate it
-                         (progn
-                           (%recreate-connection! pool conn)
-                           (return-from get-connection (dbi-connection-proxy pool)))
-                         ;; Connection is valid
-                         (return-from get-connection (dbi-connection-proxy pool)))))
-            else
-              do (let ((semaphore (semaphore pool)))
-                   (when (bt-sem:try-semaphore semaphore)
-                     (%make-connection! pool conn)
-                     (return-from get-connection (dbi-connection-proxy pool))))
-            end)
+      ;; Get current starting index and increment for next call
+      (let ((start-index (next-index conn)))
+        (setf (next-index conn) (mod (1+ start-index) pool-size))
+
+        ;; Search from start-index through entire pool
+        (loop for offset from 0 below pool-size
+              for idx = (mod (+ start-index offset) pool-size)
+              for pooled-conn = (aref pool idx)
+              if (connect-p pooled-conn)
+                do (let ((semaphore (semaphore pooled-conn)))
+                     (when (bt-sem:try-semaphore semaphore)
+                       ;; Check max-lifetime
+                       (if (and max-lifetime
+                                (created-time pooled-conn)
+                                (> (- current-time (created-time pooled-conn)) max-lifetime))
+                           ;; Connection exceeded max-lifetime, recreate it
+                           (progn
+                             (%recreate-connection! pooled-conn conn)
+                             (return-from get-connection (dbi-connection-proxy pooled-conn)))
+                           ;; Connection is valid
+                           (return-from get-connection (dbi-connection-proxy pooled-conn)))))
+              else
+                do (let ((semaphore (semaphore pooled-conn)))
+                     (when (bt-sem:try-semaphore semaphore)
+                       (%make-connection! pooled-conn conn)
+                       (return-from get-connection (dbi-connection-proxy pooled-conn))))
+              end))
 
       ;; Check timeout
       (when (>= (get-internal-real-time) timeout-time)
