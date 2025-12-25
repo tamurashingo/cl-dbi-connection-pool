@@ -679,3 +679,167 @@
                (disconnect conn2)))
         (shutdown pool)))))
 
+(deftest round-robin-returns-different-connections
+  (testing "Multiple get-connection calls return different connections"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 5
+                                          :max-size 5)))
+      (unwind-protect
+           (let* ((conn1 (get-connection pool))
+                  (conn2 (get-connection pool))
+                  (conn3 (get-connection pool))
+                  (conn4 (get-connection pool))
+                  (conn5 (get-connection pool)))
+             ;; All connections should be different objects
+             (ok (not (eq conn1 conn2))
+                 "Connection 1 and 2 should be different")
+             (ok (not (eq conn2 conn3))
+                 "Connection 2 and 3 should be different")
+             (ok (not (eq conn3 conn4))
+                 "Connection 3 and 4 should be different")
+             (ok (not (eq conn4 conn5))
+                 "Connection 4 and 5 should be different")
+
+             ;; Return all connections
+             (disconnect conn1)
+             (disconnect conn2)
+             (disconnect conn3)
+             (disconnect conn4)
+             (disconnect conn5))
+        (shutdown pool)))))
+
+(deftest round-robin-wraps-around-when-connections-unavailable
+  (testing "Round-robin wraps around to beginning when connections at end are in use"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 10
+                                          :max-size 10)))
+      (unwind-protect
+           (let* ((pool-array (slot-value pool 'dbi-cp.connectionpool::pool)))
+
+             ;; Get and return connections to advance next-index
+             (dotimes (i 8)
+               (let ((conn (get-connection pool)))
+                 (disconnect conn)))
+
+             ;; Verify next-index is now 8
+             (ok (= (slot-value pool 'dbi-cp.connectionpool::next-index) 8)
+                 "next-index should be 8")
+
+             ;; Get connections 8 and 9 and hold them (don't disconnect)
+             (let ((conn8 (get-connection pool))
+                   (conn9 (get-connection pool)))
+
+               ;; Find which pooled-connections were returned
+               (let ((pc8 (find-if (lambda (pc)
+                                    (eq (slot-value pc 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                        conn8))
+                                  (coerce pool-array 'list)))
+                     (pc9 (find-if (lambda (pc)
+                                    (eq (slot-value pc 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                        conn9))
+                                  (coerce pool-array 'list))))
+
+                 ;; Now get-connection should wrap around to index 0
+                 ;; because connections 8 and 9 are in use
+                 (let ((conn (get-connection pool)))
+                   ;; Find which pooled-connection was returned
+                   (let ((returned-pc (find-if (lambda (pc)
+                                                (eq (slot-value pc 'dbi-cp.connectionpool::dbi-connection-proxy)
+                                                    conn))
+                                              (coerce pool-array 'list))))
+                     ;; It should be one of the first connections (0-7), not 8 or 9
+                     (ok (not (or (eq returned-pc pc8) (eq returned-pc pc9)))
+                         "Should return connection from beginning (not index 8 or 9)")
+                     (disconnect conn)))
+
+                 ;; Return the held connections
+                 (disconnect conn8)
+                 (disconnect conn9))))
+        (shutdown pool)))))
+
+(deftest round-robin-max-lifetime-all-connections
+  (testing "max-lifetime recreates all connections with round-robin"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 5
+                                          :max-size 5
+                                          :max-lifetime 3
+                                          :idle-timeout 0)))
+      (unwind-protect
+           (let* ((pool-array (slot-value pool 'dbi-cp.connectionpool::pool))
+                  (initial-times (make-array 5)))
+
+             ;; Record initial creation times for all connections
+             (dotimes (i 5)
+               (setf (aref initial-times i)
+                     (slot-value (aref pool-array i) 'dbi-cp.connectionpool::created-time)))
+
+             (ok (every #'identity (coerce initial-times 'list))
+                 "All connections should have initial creation times")
+
+             ;; Wait for max-lifetime to expire
+             (sleep 4)
+
+             ;; Get all connections - with round-robin, all should be checked and recreated
+             (let ((connections (loop for i from 0 below 5
+                                     collect (get-connection pool))))
+
+               ;; Check that all connections were recreated (newer creation times)
+               (let ((recreated-count 0))
+                 (dotimes (i 5)
+                   (let ((current-time (slot-value (aref pool-array i) 'dbi-cp.connectionpool::created-time)))
+                     (when (> current-time (aref initial-times i))
+                       (incf recreated-count))))
+
+                 (ok (= recreated-count 5)
+                     "All 5 connections should be recreated after max-lifetime with round-robin"))
+
+               ;; Return all connections
+               (dolist (conn connections)
+                 (disconnect conn))))
+        (shutdown pool)))))
+
+(deftest round-robin-concurrent-access
+  (testing "Round-robin works correctly with concurrent access from multiple threads"
+    (let ((pool (make-dbi-connection-pool :sqlite3
+                                          :database-name ":memory:"
+                                          :initial-size 5
+                                          :max-size 5))
+          (thread-count 10)
+          (iterations-per-thread 10)
+          (results (make-array 100 :initial-element nil))
+          (result-lock (bt:make-lock "result-lock"))
+          (result-index 0))
+      (unwind-protect
+           (let ((threads
+                  (loop for thread-id from 0 below thread-count
+                        collect
+                        (bt:make-thread
+                         (lambda ()
+                           (dotimes (i iterations-per-thread)
+                             (let ((conn (get-connection pool)))
+                               ;; Record the connection proxy object
+                               (bt:with-lock-held (result-lock)
+                                 (setf (aref results result-index) conn)
+                                 (incf result-index))
+                               ;; Simulate some work
+                               (sleep 0.01)
+                               (disconnect conn))))
+                         :name (format nil "test-thread-~A" thread-id)))))
+
+             ;; Wait for all threads to complete
+             (dolist (thread threads)
+               (bt:join-thread thread))
+
+             ;; Verify all connections were successfully acquired
+             (ok (every #'identity (coerce results 'list))
+                 "All concurrent requests should acquire connections")
+
+             ;; Verify that multiple different connections were used
+             (let ((unique-connections (remove-duplicates (coerce results 'list) :test #'eq)))
+               (ok (>= (length unique-connections) 5)
+                   "At least 5 different connections should be used (round-robin distribution)")))
+        (shutdown pool)))))
+
