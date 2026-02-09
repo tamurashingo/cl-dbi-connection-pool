@@ -11,7 +11,9 @@
                 #:begin-transaction
                 #:commit
                 #:rollback
-                #:execute))
+                #:execute)
+  (:import-from #:trivial-garbage
+                #:make-weak-hash-table))
 
 (in-package :dbi-cp.proxy)
 
@@ -176,7 +178,7 @@
               (warn "Query size (~A bytes) is approaching max_allowed_packet (~A bytes)~%Query: ~A"
                     estimated-size max-packet sql))))))))
 
-(defvar *connection-proxy-map* (make-hash-table :test 'eq :weakness :key)
+(defvar *connection-proxy-map* (make-weak-hash-table :test #'eq :weakness :key)
   "Weak hash table mapping DBI connections to their proxies")
 
 (defun register-connection-proxy (dbi-connection proxy)

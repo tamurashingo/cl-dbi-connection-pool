@@ -22,7 +22,8 @@
                :cl-syntax-annot
                :cl-dbi
                :bt-semaphore
-               :babel)
+               :babel
+               :trivial-garbage)
   :components ((:module "src"
                 :components
                 ((:file "dbi-cp" :depends-on ("connectionpool"))
